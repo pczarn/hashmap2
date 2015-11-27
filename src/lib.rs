@@ -13,7 +13,6 @@
     filling_drop,
     hashmap_hasher,
     heap_api,
-    into_cow,
     oom,
     unique,
     unsafe_no_drop_flag,
@@ -31,7 +30,7 @@ use self::Entry::*;
 use self::SearchResult::*;
 use self::VacantEntryState::*;
 
-use std::borrow::{Borrow, IntoCow, Cow};
+use std::borrow::{Borrow, Cow};
 use std::cmp::{max, Eq, PartialEq};
 use std::default::Default;
 use std::fmt::{self, Debug};
@@ -403,7 +402,7 @@ fn robin_hood<'a, K: 'a, V: 'a>(mut bucket: FullBucketMut<'a, K, V>,
                         mut hash: SafeHash,
                         mut k: K,
                         mut v: V)
-                        -> &'a mut V {
+                        -> FullBucketMut<'a, K, V> {
     let starting_index = bucket.index();
     let size = {
         let table = bucket.table(); // FIXME "lifetime too short".
@@ -428,9 +427,7 @@ fn robin_hood<'a, K: 'a, V: 'a>(mut bucket: FullBucketMut<'a, K, V>,
                     // right out of the table!
                     return Bucket::at_index(b.into_table(), starting_index)
                                .peek()
-                               .expect_full()
-                               .into_mut_refs()
-                               .1;
+                               .expect_full();
                 },
                 Full(bucket) => bucket
             };
@@ -819,7 +816,7 @@ impl<K, V, S> HashMap<K, V, S>
 
             if (ib as isize) < robin_ib {
                 // Found a luckier bucket than me. Better steal his spot.
-                return robin_hood(bucket, robin_ib as usize, hash, k, v);
+                return robin_hood(bucket, robin_ib as usize, hash, k, v).into_mut_refs().1;
             }
 
             probe = bucket.next();
@@ -968,13 +965,13 @@ impl<K, V, S> HashMap<K, V, S>
     /// assert_eq!(m["foo"], 0);
     /// assert_eq!(m["bar"], 1);
     /// ```
-    pub fn entry2<'a, Q: ?Sized, R: IntoCow<'a, Q>>(&mut self, key: R) -> Entry<K, V>
+    pub fn entry2<'a, Q: ?Sized, R: Into<Cow<'a, Q>>>(&mut self, key: R) -> Entry<K, V>
             where K: Clone + Borrow<Q>,
                   Q: 'a + ToOwned<Owned=K> + Hash + Eq {
         // Gotta resize now.
         self.reserve(1);
 
-        let key = key.into_cow();
+        let key = key.into();
 
         let hash = {
             let b: &Q = key.borrow();
@@ -1084,6 +1081,28 @@ impl<K, V, S> HashMap<K, V, S>
         self.search(k).map(|bucket| bucket.into_refs().1)
     }
 
+    /// Returns a reference to the key/value tuple corresponding to the key.
+    ///
+    /// The key may be any borrowed form of the map's key type, but
+    /// `Hash` and `Eq` on the borrowed form *must* match those for
+    /// the key type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hashmap2::HashMap;
+    ///
+    /// let mut map = HashMap::new();
+    /// map.insert(1, "a");
+    /// assert_eq!(map.get_pair(&1), Some((&1, &"a")));
+    /// assert_eq!(map.get_pair(&2), None);
+    /// ```
+    pub fn get_pair<Q: ?Sized>(&self, k: &Q) -> Option<(&K, &V)>
+        where K: Borrow<Q>, Q: Hash + Eq
+    {
+        self.search(k).map(|bucket| bucket.into_refs())
+    }
+
     /// Returns true if the map contains a value for the specified key.
     ///
     /// The key may be any borrowed form of the map's key type, but
@@ -1128,6 +1147,12 @@ impl<K, V, S> HashMap<K, V, S>
         where K: Borrow<Q>, Q: Hash + Eq
     {
         self.search_mut(k).map(|bucket| bucket.into_mut_refs().1)
+    }
+
+    pub fn get_pair_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<(&K, &mut V)>
+        where K: Borrow<Q>, Q: Hash + Eq
+    {
+        self.search_mut(k).map(|bucket| bucket.into_semi_mut_refs())
     }
 
     /// Inserts a key-value pair into the map.
@@ -1614,6 +1639,10 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
         self.elem.read_mut().1
     }
 
+    pub fn get_pair_mut(&mut self) -> (&K, &mut V) {
+        self.elem.read_semi_mut()
+    }
+
     /// Converts the OccupiedEntry into a mutable reference to the value in the entry
     /// with a lifetime bound to the map itself
     pub fn into_mut(self) -> &'a mut V {
@@ -1655,12 +1684,27 @@ impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
     pub fn insert(self, value: V) -> &'a mut V {
         match self.elem {
             NeqElem(bucket, ib) => {
-                robin_hood(bucket, ib, self.hash, self.key, value)
+                robin_hood(bucket, ib, self.hash, self.key, value).into_mut_refs().1
             }
             NoElem(bucket) => {
                 bucket.put(self.hash, self.key, value).into_mut_refs().1
             }
         }
+    }
+
+    /// Sets the value of the entry with the VacantEntry's key,
+    /// and returns the entry
+    pub fn insert_entry(self, value: V) -> OccupiedEntry<'a, K, V> {
+        let bucket = match self.elem {
+            NeqElem(bucket, ib) => {
+                robin_hood(bucket, ib, self.hash, self.key, value)
+            }
+            NoElem(bucket) => {
+                bucket.put(self.hash, self.key, value)
+            }
+        };
+
+        OccupiedEntry { elem: bucket }
     }
 
     /// Gets a reference to the entry key

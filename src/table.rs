@@ -435,6 +435,13 @@ impl<K, V, M: Deref<Target=RawTable<K, V>> + DerefMut> FullBucket<K, V, M> {
              &mut *self.raw.val)
         }
     }
+
+    pub fn read_semi_mut(&mut self) -> (&K, &mut V) {
+        unsafe {
+            (&*self.raw.key,
+             &mut *self.raw.val)
+        }
+    }
 }
 
 impl<'t, K, V, M: Deref<Target=RawTable<K, V>> + 't> FullBucket<K, V, M> {
@@ -457,6 +464,13 @@ impl<'t, K, V, M: Deref<Target=RawTable<K, V>> + DerefMut + 't> FullBucket<K, V,
     pub fn into_mut_refs(self) -> (&'t mut K, &'t mut V) {
         unsafe {
             (&mut *self.raw.key,
+             &mut *self.raw.val)
+        }
+    }
+
+    pub fn into_semi_mut_refs(self) -> (&'t K, &'t mut V) {
+        unsafe {
+            (&*self.raw.key,
              &mut *self.raw.val)
         }
     }
