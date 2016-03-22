@@ -15,7 +15,9 @@
     heap_api,
     oom,
     unique,
-    unsafe_no_drop_flag)]
+    unsafe_no_drop_flag,
+    specialization
+)]
 
 #![cfg_attr(test, feature(inclusive_range_syntax))]
 
@@ -24,6 +26,8 @@ extern crate rand;
 
 mod recover;
 mod table;
+mod adaptive_hashing;
+mod adaptive_map;
 
 use self::Entry::*;
 use self::VacantEntryState::*;
@@ -35,10 +39,12 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash, SipHasher};
 use std::iter::{self, Iterator, ExactSizeIterator, IntoIterator, FromIterator, Extend, Map};
 use std::mem::{self, replace};
-use std::ops::{Deref, FnMut, FnOnce, Index};
+use std::ops::{Deref, DerefMut, FnMut, FnOnce, Index};
 use std::option::Option::{Some, None};
 use rand::{Rng};
 use recover::Recover;
+use adaptive_hashing::AdaptiveState;
+use adaptive_map::SpecializedInsert;
 
 use table::{
     Bucket,
@@ -347,7 +353,7 @@ fn test_resize_policy() {
 /// }
 /// ```
 #[derive(Clone)]
-pub struct HashMap<K, V, S = RandomState> {
+pub struct HashMap<K, V, S = AdaptiveState> {
     // All hashes are keyed on these values, to prevent hash collision attacks.
     hash_builder: S,
 
@@ -543,7 +549,7 @@ impl<K, V, S> HashMap<K, V, S>
     }
 }
 
-impl<K: Hash + Eq, V> HashMap<K, V, RandomState> {
+impl<K: Hash + Eq, V> HashMap<K, V, AdaptiveState> {
     /// Creates an empty HashMap.
     ///
     /// # Examples
@@ -553,7 +559,7 @@ impl<K: Hash + Eq, V> HashMap<K, V, RandomState> {
     /// let mut map: HashMap<&str, isize> = HashMap::new();
     /// ```
     #[inline]
-    pub fn new() -> HashMap<K, V, RandomState> {
+    pub fn new() -> HashMap<K, V, AdaptiveState> {
         Default::default()
     }
 
@@ -566,8 +572,9 @@ impl<K: Hash + Eq, V> HashMap<K, V, RandomState> {
     /// let mut map: HashMap<&str, isize> = HashMap::with_capacity(10);
     /// ```
     #[inline]
-    pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
-        HashMap::with_capacity_and_hasher(capacity, Default::default())
+    pub fn with_capacity(capacity: usize) -> HashMap<K, V, AdaptiveState> {
+        let map: Self = Default::default();
+        HashMap::with_capacity_and_hasher(capacity, map.hash_builder)
     }
 }
 
@@ -1286,7 +1293,7 @@ impl<K, V, S> Default for HashMap<K, V, S>
     where K: Eq + Hash,
           S: BuildHasher + Default,
 {
-    fn default() -> HashMap<K, V, S> {
+    default fn default() -> HashMap<K, V, S> {
         HashMap::with_hasher(Default::default())
     }
 }
