@@ -18,6 +18,7 @@ use table::{
     SafeHash
 };
 use internal_entry::InternalEntry;
+use entry::VacantEntryState;
 use entry::VacantEntryState::NeqElem;
 use entry::VacantEntryState::NoElem;
 use HashMap;
@@ -56,6 +57,7 @@ macro_rules! specialize {
             #[inline]
             fn safeguarded_search(&mut self, key: &$key_type, hash: SafeHash)
                                  -> InternalEntryMut<$key_type, V> {
+
                 let table_capacity = self.table.capacity();
                 let entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
                 match entry {
@@ -67,43 +69,7 @@ macro_rules! specialize {
                         InternalEntry::TableIsEmpty
                     }
                     InternalEntry::Vacant { elem, hash } => {
-                        let index = match elem {
-                            NeqElem(ref bucket, _) => bucket.index(),
-                            NoElem(ref bucket) => bucket.index(),
-                        };
-                        // Copied from FullBucket::displacement.
-                        let displacement =
-                            index.wrapping_sub(hash.inspect() as usize) & (table_capacity - 1);
-                        if displacement > DISPLACEMENT_THRESHOLD {
-                            let map = match elem {
-                                NeqElem(bucket, _) => {
-                                    bucket.into_table()
-                                }
-                                NoElem(bucket) => {
-                                    bucket.into_table()
-                                }
-                            };
-                            // Probe sequence is too long.
-                            // Adapt to safe hashing if desirable.
-                            maybe_adapt_to_safe_hashing(map.0);
-                            search_hashed(&mut map.0.table, hash, |k| k == key)
-                        } else {
-                            // This should compile down to a no-op.
-                            match elem {
-                                NeqElem(bucket, ib) => {
-                                    InternalEntry::Vacant {
-                                        elem: NeqElem(bucket.convert_table(), ib),
-                                        hash: hash,
-                                    }
-                                }
-                                NoElem(bucket) => {
-                                    InternalEntry::Vacant {
-                                        elem: NoElem(bucket.convert_table()),
-                                        hash: hash,
-                                    }
-                                }
-                            }
-                        }
+                        safeguard_vacant_entry(elem, key, hash, table_capacity)
                     }
                 }
             }
@@ -118,10 +84,60 @@ macro_rules! specialize {
     )
 }
 
-#[cold]
-fn maybe_adapt_to_safe_hashing<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
+#[inline]
+fn safeguard_vacant_entry<'a, K, V>(
+    elem: VacantEntryState<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>,
+    key: &K,
+    hash: SafeHash,
+    table_capacity: usize,
+) -> InternalEntryMut<'a, K, V>
     where K: Eq + Hash
 {
+    let index = match elem {
+        NeqElem(ref bucket, _) => bucket.index(),
+        NoElem(ref bucket) => bucket.index(),
+    };
+    // Copied from FullBucket::displacement.
+    let displacement = index.wrapping_sub(hash.inspect() as usize) & (table_capacity - 1);
+    if displacement > DISPLACEMENT_THRESHOLD {
+        // Probe sequence is too long.
+        maybe_adapt_to_safe_hashing(elem, key, hash)
+    } else {
+        // This should compile down to a no-op.
+        match elem {
+            NeqElem(bucket, ib) => {
+                InternalEntry::Vacant {
+                    elem: NeqElem(bucket.convert_table(), ib),
+                    hash: hash,
+                }
+            }
+            NoElem(bucket) => {
+                InternalEntry::Vacant {
+                    elem: NoElem(bucket.convert_table()),
+                    hash: hash,
+                }
+            }
+        }
+    }
+}
+
+// Adapt to safe hashing if desirable.
+#[cold]
+fn maybe_adapt_to_safe_hashing<'a, K, V>(
+    elem: VacantEntryState<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>,
+    key: &K,
+    hash: SafeHash
+) -> InternalEntryMut<'a, K, V>
+    where K: Eq + Hash
+{
+    let map = match elem {
+        NeqElem(bucket, _) => {
+            bucket.into_table().0
+        }
+        NoElem(bucket) => {
+            bucket.into_table().0
+        }
+    };
     let capacity = map.table.capacity();
     let load_factor = map.len() as f32 / capacity as f32;
     if load_factor >= LOAD_FACTOR_THRESHOLD {
@@ -134,6 +150,7 @@ fn maybe_adapt_to_safe_hashing<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
             map.insert_hashed_nocheck(hash, k, v);
         }
     }
+    search_hashed(&mut map.table, hash, |k| k == key)
 }
 
 specialize! { K = u8; }
