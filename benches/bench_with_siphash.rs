@@ -21,7 +21,7 @@ use hashmap2::{HashMap, RandomState};
 #[bench]
 fn new_drop(b : &mut Bencher) {
     b.iter(|| {
-        let m : HashMap<i32, i32, _> = HashMap::with_hash_state(RandomState::new());
+        let m : HashMap<i32, i32, _> = HashMap::with_hasher(RandomState::new());
         assert_eq!(m.len(), 0);
         test::black_box(&m);
     })
@@ -30,7 +30,7 @@ fn new_drop(b : &mut Bencher) {
 #[bench]
 fn new_insert_drop(b : &mut Bencher) {
     b.iter(|| {
-        let mut m = HashMap::with_hash_state(RandomState::new());
+        let mut m = HashMap::with_hasher(RandomState::new());
         m.insert(0, 0);
         assert_eq!(m.len(), 1);
         test::black_box(&m);
@@ -39,7 +39,7 @@ fn new_insert_drop(b : &mut Bencher) {
 
 #[bench]
 fn grow_by_insertion(b: &mut Bencher) {
-    let mut m = HashMap::with_hash_state(RandomState::new());
+    let mut m = HashMap::with_hasher(RandomState::new());
 
     for i in 1..1001 {
         m.insert(i, i);
@@ -58,7 +58,7 @@ fn grow_by_insertion(b: &mut Bencher) {
 
 #[bench]
 fn find_existing(b: &mut Bencher) {
-    let mut m = HashMap::with_hash_state(RandomState::new());
+    let mut m = HashMap::with_hasher(RandomState::new());
 
     for i in 1..1001 {
         m.insert(i, i);
@@ -75,7 +75,7 @@ fn find_existing(b: &mut Bencher) {
 
 #[bench]
 fn find_nonexisting(b: &mut Bencher) {
-    let mut m = HashMap::with_hash_state(RandomState::new());
+    let mut m = HashMap::with_hasher(RandomState::new());
 
     for i in 1..1001 {
         m.insert(i, i);
@@ -92,7 +92,7 @@ fn find_nonexisting(b: &mut Bencher) {
 
 #[bench]
 fn hashmap_as_queue(b: &mut Bencher) {
-    let mut m = HashMap::with_hash_state(RandomState::new());
+    let mut m = HashMap::with_hasher(RandomState::new());
 
     for i in 1..1001 {
         m.insert(i, i);
@@ -112,7 +112,7 @@ fn hashmap_as_queue(b: &mut Bencher) {
 
 #[bench]
 fn get_remove_insert(b: &mut Bencher) {
-    let mut m = HashMap::with_hash_state(RandomState::new());
+    let mut m = HashMap::with_hasher(RandomState::new());
 
     for i in 1..1001 {
         m.insert(i, i);
