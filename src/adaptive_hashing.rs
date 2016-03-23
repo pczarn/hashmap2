@@ -10,14 +10,19 @@
 
 use std::hash::{BuildHasher, SipHasher, Hasher};
 
-use RandomState;
+use sip_hash_state::SipHashState;
 
 #[derive(Clone)]
 pub struct AdaptiveState {
-    inner: Option<RandomState>
+    inner: Option<SipHashState>
 }
 
 impl AdaptiveState {
+    #[inline]
+    pub fn new() -> Self {
+        Default::default()
+    }
+
     #[inline]
     pub fn new_fast() -> Self {
         AdaptiveState {
@@ -27,7 +32,7 @@ impl AdaptiveState {
 
     #[inline]
     pub fn switch_to_safe_hashing(&mut self) {
-        self.inner = Some(RandomState::new());
+        self.inner = Some(SipHashState::new());
     }
 
     pub fn uses_safe_hashing(&self) -> bool {

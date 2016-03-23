@@ -24,32 +24,30 @@
 extern crate alloc;
 extern crate rand;
 
-mod recover;
 mod table;
 mod adaptive_hashing;
 mod adaptive_map;
-
-use self::Entry::*;
-use self::VacantEntryState::*;
+mod entry;
+mod internal_entry;
+mod recover;
+mod sip_hash_state;
 
 use std::borrow::{Borrow, Cow};
 use std::cmp::{max, Eq, PartialEq};
 use std::default::Default;
 use std::fmt::{self, Debug};
-use std::hash::{BuildHasher, Hash, SipHasher};
+use std::hash::{BuildHasher, Hash};
 use std::iter::{self, Iterator, ExactSizeIterator, IntoIterator, FromIterator, Extend, Map};
 use std::mem::{self, replace};
-use std::ops::{Deref, FnMut, FnOnce, Index};
+use std::ops::{Deref, FnMut, Index};
 use std::option::Option::{Some, None};
-use rand::{Rng};
-use recover::Recover;
-use adaptive_hashing::AdaptiveState;
 use adaptive_map::SafeguardedSearch;
+use entry::{NoElem, NeqElem, Occupied, Vacant};
+use internal_entry::InternalEntry;
+use recover::Recover;
 
 use table::{
     Bucket,
-    EmptyBucket,
-    FullBucket,
     FullBucketMut,
     RawTable,
     SafeHash
@@ -58,6 +56,9 @@ use table::BucketState::{
     Empty,
     Full,
 };
+
+pub use adaptive_hashing::AdaptiveState as RandomState;
+pub use entry::{Entry, OccupiedEntry, VacantEntry};
 
 const INITIAL_LOG2_CAP: usize = 5;
 const INITIAL_CAPACITY: usize = 1 << INITIAL_LOG2_CAP; // 2^5
@@ -353,11 +354,11 @@ fn test_resize_policy() {
 /// }
 /// ```
 #[derive(Clone)]
-pub struct HashMap<K, V, S = AdaptiveState> {
+pub struct HashMap<K, V, S = RandomState> {
+    table: RawTable<K, V>,
+
     // All hashes are keyed on these values, to prevent hash collision attacks.
     hash_builder: S,
-
-    table: RawTable<K, V>,
 
     resize_policy: DefaultResizePolicy,
 }
@@ -549,7 +550,7 @@ impl<K, V, S> HashMap<K, V, S>
     }
 }
 
-impl<K: Hash + Eq, V> HashMap<K, V, AdaptiveState> {
+impl<K: Hash + Eq, V> HashMap<K, V, RandomState> {
     /// Creates an empty HashMap.
     ///
     /// # Examples
@@ -559,7 +560,7 @@ impl<K: Hash + Eq, V> HashMap<K, V, AdaptiveState> {
     /// let mut map: HashMap<&str, isize> = HashMap::new();
     /// ```
     #[inline]
-    pub fn new() -> HashMap<K, V, AdaptiveState> {
+    pub fn new() -> HashMap<K, V, RandomState> {
         Default::default()
     }
 
@@ -572,7 +573,7 @@ impl<K: Hash + Eq, V> HashMap<K, V, AdaptiveState> {
     /// let mut map: HashMap<&str, isize> = HashMap::with_capacity(10);
     /// ```
     #[inline]
-    pub fn with_capacity(capacity: usize) -> HashMap<K, V, AdaptiveState> {
+    pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
         let map: Self = Default::default();
         HashMap::with_capacity_and_hasher(capacity, map.hash_builder)
     }
@@ -1228,11 +1229,11 @@ fn search_entry_hashed2<'a, K: Eq, V, Q: ?Sized>(table: &'a mut RawTable<K,V>, h
         let bucket = match probe.peek() {
             Empty(bucket) => {
                 // Found a hole!
-                return Vacant(VacantEntry {
+                let internal = InternalEntry::Vacant {
                     hash: hash,
-                    key: k.into_owned(),
                     elem: NoElem(bucket),
-                });
+                };
+                return entry::from_internal(internal, Some(k.into_owned())).unwrap();
             },
             Full(bucket) => bucket
         };
@@ -1243,10 +1244,10 @@ fn search_entry_hashed2<'a, K: Eq, V, Q: ?Sized>(table: &'a mut RawTable<K,V>, h
 
             // key matches?
             if *b == *bucket.read().0.borrow() {
-                return Occupied(OccupiedEntry {
-                    key: None,
+                let internal = InternalEntry::Occupied {
                     elem: bucket,
-                });
+                };
+                return entry::from_internal(internal, None).unwrap();
             }
         }
 
@@ -1254,11 +1255,11 @@ fn search_entry_hashed2<'a, K: Eq, V, Q: ?Sized>(table: &'a mut RawTable<K,V>, h
 
         if ib < robin_ib {
             // Found a luckier bucket than me. Better steal his spot.
-            return Vacant(VacantEntry {
+            let internal = InternalEntry::Vacant {
                 hash: hash,
-                key: k.into_owned(),
                 elem: NeqElem(bucket, robin_ib as usize),
-            });
+            };
+            return entry::from_internal(internal, Some(k.into_owned())).unwrap();
         }
 
         probe = bucket.next();
@@ -1367,80 +1368,6 @@ impl<'a, K, V> Clone for Values<'a, K, V> {
 /// HashMap drain iterator.
 pub struct Drain<'a, K: 'a, V: 'a> {
     inner: iter::Map<table::Drain<'a, K, V>, fn((SafeHash, K, V)) -> (K, V)>
-}
-
-enum InternalEntry<K, V, M> {
-    Occupied {
-        elem: FullBucket<K, V, M>,
-    },
-    Vacant {
-        hash: SafeHash,
-        elem: VacantEntryState<K, V, M>,
-    },
-    TableIsEmpty,
-}
-
-impl<K, V, M> InternalEntry<K, V, M> {
-    #[inline]
-    fn into_occupied_bucket(self) -> Option<FullBucket<K, V, M>> {
-        match self {
-            InternalEntry::Occupied { elem } => Some(elem),
-            _ => None,
-        }
-    }
-}
-
-impl<'a, K, V> InternalEntry<K, V, &'a mut RawTable<K, V>> {
-    #[inline]
-    fn into_entry(self, key: K) -> Option<Entry<'a, K, V>> {
-        match self {
-            InternalEntry::Occupied { elem } => {
-                Some(Occupied(OccupiedEntry {
-                    key: Some(key),
-                    elem: elem
-                }))
-            }
-            InternalEntry::Vacant { hash, elem } => {
-                Some(Vacant(VacantEntry {
-                    hash: hash,
-                    key: key,
-                    elem: elem,
-                }))
-            }
-            InternalEntry::TableIsEmpty => None
-        }
-    }
-}
-
-/// A view into a single location in a map, which may be vacant or occupied.
-pub enum Entry<'a, K: 'a, V: 'a> {
-    /// An occupied Entry.
-    Occupied(OccupiedEntry<'a, K, V>),
-
-    /// A vacant Entry.
-    Vacant(VacantEntry<'a, K, V>),
-}
-
-/// A view into a single occupied location in a HashMap.
-pub struct OccupiedEntry<'a, K: 'a, V: 'a> {
-    key: Option<K>,
-    elem: FullBucket<K, V, &'a mut RawTable<K, V>>,
-}
-
-/// A view into a single empty location in a HashMap.
-pub struct VacantEntry<'a, K: 'a, V: 'a> {
-    hash: SafeHash,
-    key: K,
-    elem: VacantEntryState<K, V, &'a mut RawTable<K, V>>,
-}
-
-/// Possible states of a VacantEntry.
-enum VacantEntryState<K, V, M> {
-    /// The index is occupied, but the key to insert has precedence,
-    /// and will kick the current one out on insertion.
-    NeqElem(FullBucket<K, V, M>, usize),
-    /// The index is genuinely vacant.
-    NoElem(EmptyBucket<K, V, M>),
 }
 
 impl<'a, K, V, S> IntoIterator for &'a HashMap<K, V, S>
@@ -1558,127 +1485,6 @@ impl<'a, K, V> ExactSizeIterator for Drain<'a, K, V> {
     #[inline] fn len(&self) -> usize { self.inner.len() }
 }
 
-impl<'a, K, V> Entry<'a, K, V> {
-    /// Returns the entry key
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashmap2::HashMap;
-    ///
-    /// let mut map = HashMap::<String, u32>::new();
-    ///
-    /// assert_eq!("hello", map.entry("hello".to_string()).key());
-    /// ```
-    pub fn key(&self) -> &K {
-        match *self {
-            Occupied(ref entry) => entry.key(),
-            Vacant(ref entry) => entry.key(),
-        }
-    }
-
-    /// Ensures a value is in the entry by inserting the default if empty, and returns
-    /// a mutable reference to the value in the entry.
-    pub fn or_insert(self, default: V) -> &'a mut V {
-        match self {
-            Occupied(entry) => entry.into_mut(),
-            Vacant(entry) => entry.insert(default),
-        }
-    }
-
-    /// Ensures a value is in the entry by inserting the result of the default function if empty,
-    /// and returns a mutable reference to the value in the entry.
-    pub fn or_insert_with<F: FnOnce() -> V>(self, default: F) -> &'a mut V {
-        match self {
-            Occupied(entry) => entry.into_mut(),
-            Vacant(entry) => entry.insert(default()),
-        }
-    }
-}
-
-impl<'a, K, V> OccupiedEntry<'a, K, V> {
-    /// Gets a reference to the value in the entry.
-    pub fn get(&self) -> &V {
-        self.elem.read().1
-    }
-
-    /// Gets a mutable reference to the value in the entry.
-    pub fn get_mut(&mut self) -> &mut V {
-        self.elem.read_mut().1
-    }
-
-    /// Converts the OccupiedEntry into a mutable reference to the value in the entry
-    /// with a lifetime bound to the map itself
-    pub fn into_mut(self) -> &'a mut V {
-        self.elem.into_mut_refs().1
-    }
-
-    /// Sets the value of the entry, and returns the entry's old value
-    pub fn insert(&mut self, mut value: V) -> V {
-        let old_value = self.get_mut();
-        mem::swap(&mut value, old_value);
-        value
-    }
-
-    /// Takes the value out of the entry, and returns it
-    pub fn remove(self) -> V {
-        pop_internal(self.elem).1
-    }
-
-    /// Gets a reference to the entry key
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashmap2::HashMap;
-    ///
-    /// let mut map = HashMap::new();
-    ///
-    /// map.insert("foo".to_string(), 1);
-    /// assert_eq!("foo", map.entry("foo".to_string()).key());
-    /// ```
-    pub fn key(&self) -> &K {
-        self.elem.read().0
-    }
-
-    /// Returns a key that was used for search.
-    ///
-    /// The key was retained for further use.
-    fn take_key(&mut self) -> Option<K> {
-        self.key.take()
-    }
-}
-
-impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
-    /// Sets the value of the entry with the VacantEntry's key,
-    /// and returns a mutable reference to it
-    pub fn insert(self, value: V) -> &'a mut V {
-        match self.elem {
-            NeqElem(bucket, ib) => {
-                robin_hood(bucket, ib, self.hash, self.key, value)
-            }
-            NoElem(bucket) => {
-                bucket.put(self.hash, self.key, value).into_mut_refs().1
-            }
-        }
-    }
-
-    /// Gets a reference to the entry key
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashmap2::HashMap;
-    ///
-    /// let mut map = HashMap::<String, u32>::new();
-    ///
-    /// assert_eq!("foo", map.entry("foo".to_string()).key());
-    /// ```
-    pub fn key(&self) -> &K {
-        &self.key
-    }
-}
-
 impl<K, V, S> FromIterator<(K, V)> for HashMap<K, V, S>
     where K: Eq + Hash, S: BuildHasher + Default
 {
@@ -1709,42 +1515,6 @@ impl<'a, K, V, S> Extend<(&'a K, &'a V)> for HashMap<K, V, S>
     }
 }
 
-/// `RandomState` is the default state for `HashMap` types.
-///
-/// A particular instance `RandomState` will create the same instances of
-/// `Hasher`, but the hashers created by two different `RandomState`
-/// instances are unlikely to produce the same result for the same values.
-#[derive(Clone)]
-pub struct RandomState {
-    k0: u64,
-    k1: u64,
-}
-
-impl RandomState {
-    /// Constructs a new `RandomState` that is initialized with random keys.
-    #[inline]
-    #[allow(deprecated)] // rand
-    pub fn new() -> RandomState {
-        let mut r = rand::thread_rng();
-        RandomState { k0: r.gen(), k1: r.gen() }
-    }
-}
-
-impl BuildHasher for RandomState {
-    type Hasher = SipHasher;
-    #[inline]
-    fn build_hasher(&self) -> SipHasher {
-        SipHasher::new_with_keys(self.k0, self.k1)
-    }
-}
-
-impl Default for RandomState {
-    #[inline]
-    fn default() -> RandomState {
-        RandomState::new()
-    }
-}
-
 impl<K, S, Q: ?Sized> Recover<Q> for HashMap<K, (), S>
     where K: Eq + Hash + Borrow<Q>, S: BuildHasher, Q: Eq + Hash
 {
@@ -1768,7 +1538,7 @@ impl<K, S, Q: ?Sized> Recover<Q> for HashMap<K, (), S>
         match self.entry(key) {
             Occupied(mut occupied) => {
                 let key = occupied.take_key().unwrap();
-                Some(mem::replace(occupied.elem.read_mut().0, key))
+                Some(mem::replace(entry::occupied_elem(&mut occupied).read_mut().0, key))
             }
             Vacant(vacant) => {
                 vacant.insert(());

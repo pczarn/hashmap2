@@ -17,10 +17,10 @@ use table::{
     RawTable,
     SafeHash
 };
+use internal_entry::InternalEntry;
+use entry::VacantEntryState::NeqElem;
+use entry::VacantEntryState::NoElem;
 use HashMap;
-use InternalEntry;
-use VacantEntryState::NeqElem;
-use VacantEntryState::NoElem;
 use search_hashed;
 
 // Beyond this displacement, we switch to safe hashing or grow the table.
@@ -29,12 +29,14 @@ const DISPLACEMENT_THRESHOLD: usize = 128;
 // Otherwise, we grow the table.
 const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
 
+// Avoid problems with private types in public interfaces.
+pub type InternalEntryMut<'a, K: 'a, V: 'a> = InternalEntry<K, V, &'a mut RawTable<K, V>>;
+
 // We have this trait, because specialization doesn't work for inherent impls yet.
 pub trait SafeguardedSearch<K, V> {
     // Method names are changed, because inherent methods shadow trait impl
     // methods.
-    fn safeguarded_search(&mut self, key: &K, hash: SafeHash)
-                         -> InternalEntry<K, V, &mut RawTable<K, V>>;
+    fn safeguarded_search(&mut self, key: &K, hash: SafeHash) -> InternalEntryMut<K, V>;
 }
 
 impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
@@ -42,8 +44,7 @@ impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
           S: BuildHasher
 {
     #[inline]
-    default fn safeguarded_search(&mut self, key: &K, hash: SafeHash)
-                                 -> InternalEntry<K, V, &mut RawTable<K, V>> {
+    default fn safeguarded_search(&mut self, key: &K, hash: SafeHash) -> InternalEntryMut<K, V> {
         search_hashed(&mut self.table, hash, |k| k == key)
     }
 }
@@ -54,7 +55,7 @@ macro_rules! specialize {
                                 for HashMap<$key_type, V, AdaptiveState> {
             #[inline]
             fn safeguarded_search(&mut self, key: &$key_type, hash: SafeHash)
-                                 -> InternalEntry<$key_type, V, &mut RawTable<$key_type, V>> {
+                                 -> InternalEntryMut<$key_type, V> {
                 let table_capacity = self.table.capacity();
                 let entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
                 match entry {
