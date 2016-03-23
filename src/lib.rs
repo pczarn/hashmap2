@@ -39,12 +39,12 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash, SipHasher};
 use std::iter::{self, Iterator, ExactSizeIterator, IntoIterator, FromIterator, Extend, Map};
 use std::mem::{self, replace};
-use std::ops::{Deref, DerefMut, FnMut, FnOnce, Index};
+use std::ops::{Deref, FnMut, FnOnce, Index};
 use std::option::Option::{Some, None};
 use rand::{Rng};
 use recover::Recover;
 use adaptive_hashing::AdaptiveState;
-use adaptive_map::SpecializedInsert;
+use adaptive_map::SafeguardedSearch;
 
 use table::{
     Bucket,
@@ -815,7 +815,7 @@ impl<K, V, S> HashMap<K, V, S>
     /// If the key already exists, the hashtable will be returned untouched
     /// and a reference to the existing element will be returned.
     fn insert_hashed_nocheck(&mut self, hash: SafeHash, k: K, v: V) -> Option<V> {
-        let entry = search_hashed(&mut self.table, hash, |key| *key == k).into_entry(k);
+        let entry = self.safeguarded_search(&k, hash).into_entry(k);
         match entry {
             Some(Occupied(mut elem)) => {
                 Some(elem.insert(v))
@@ -948,7 +948,8 @@ impl<K, V, S> HashMap<K, V, S>
     pub fn entry(&mut self, key: K) -> Entry<K, V> {
         // Gotta resize now.
         self.reserve(1);
-        self.search_mut(&key).into_entry(key).expect("unreachable")
+        let hash = self.make_hash(&key);
+        self.safeguarded_search(&key, hash).into_entry(key).expect("unreachable")
     }
 
     /// Gets the given key's corresponding entry in the map for in-place

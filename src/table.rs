@@ -190,6 +190,14 @@ impl<K, V, M> FullBucket<K, V, M> {
     pub fn into_table(self) -> M {
         self.table
     }
+    // Convert the table.
+    pub fn convert_table<T>(self) -> FullBucket<K, V, T> where M: Into<T> {
+        FullBucket {
+            raw: self.raw,
+            idx: self.idx,
+            table: self.table.into(),
+        }
+    }
     /// Get the raw index.
     pub fn index(&self) -> usize {
         self.idx
@@ -200,6 +208,22 @@ impl<K, V, M> EmptyBucket<K, V, M> {
     /// Borrow a reference to the table.
     pub fn table(&self) -> &M {
         &self.table
+    }
+    /// Move out the reference to the table.
+    pub fn into_table(self) -> M {
+        self.table
+    }
+    // Convert the table.
+    pub fn convert_table<T>(self) -> EmptyBucket<K, V, T> where M: Into<T> {
+        EmptyBucket {
+            raw: self.raw,
+            idx: self.idx,
+            table: self.table.into(),
+        }
+    }
+    /// Get the raw index.
+    pub fn index(&self) -> usize {
+        self.idx
     }
 }
 

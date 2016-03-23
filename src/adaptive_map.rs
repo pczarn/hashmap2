@@ -14,16 +14,14 @@ use std::ops::{Deref, DerefMut};
 
 use adaptive_hashing::AdaptiveState;
 use table::{
-    Bucket,
     RawTable,
     SafeHash
 };
-use table::BucketState::{
-    Empty,
-    Full,
-};
 use HashMap;
-use robin_hood;
+use InternalEntry;
+use VacantEntryState::NeqElem;
+use VacantEntryState::NoElem;
+use search_hashed;
 
 // Beyond this displacement, we switch to safe hashing or grow the table.
 const DISPLACEMENT_THRESHOLD: usize = 128;
@@ -32,140 +30,95 @@ const DISPLACEMENT_THRESHOLD: usize = 128;
 const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
 
 // We have this trait, because specialization doesn't work for inherent impls yet.
-pub trait SpecializedInsert<K, V> {
+pub trait SafeguardedSearch<K, V> {
     // Method names are changed, because inherent methods shadow trait impl
     // methods.
-    fn specialized_insert_or_replace_with<'a, F>(
-        &'a mut self,
-        hash: SafeHash,
-        k: K,
-        v: V,
-        mut found_existing: F
-    ) -> &'a mut V
-        where F: FnMut(&mut K, &mut V, K, V);
+    fn safeguarded_search(&mut self, key: &K, hash: SafeHash)
+                         -> InternalEntry<K, V, &mut RawTable<K, V>>;
 }
 
-impl<K, V, S> SpecializedInsert<K, V> for HashMap<K, V, S>
+impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
     where K: Eq + Hash,
           S: BuildHasher
 {
     #[inline]
-    default fn specialized_insert_or_replace_with<'a, F>(
-        &'a mut self,
-        hash: SafeHash,
-        k: K,
-        v: V,
-        mut found_existing: F
-    ) -> &'a mut V
-        where F: FnMut(&mut K, &mut V, K, V),
-    {
-        // Worst case, we'll find one empty bucket among `size + 1` buckets.
-        let size = self.table.size();
-        let mut probe = Bucket::new(&mut self.table, hash);
-        let ib = probe.index();
-
-        loop {
-            let mut bucket = match probe.peek() {
-                Empty(bucket) => {
-                    // Found a hole!
-                    return bucket.put(hash, k, v).into_mut_refs().1;
-                }
-                Full(bucket) => bucket
-            };
-
-            // hash matches?
-            if bucket.hash() == hash {
-                // key matches?
-                if k == *bucket.read_mut().0 {
-                    let (bucket_k, bucket_v) = bucket.into_mut_refs();
-                    debug_assert!(k == *bucket_k);
-                    // Key already exists. Get its reference.
-                    found_existing(bucket_k, bucket_v, k, v);
-                    return bucket_v;
-                }
-            }
-
-            let robin_ib = bucket.index() as isize - bucket.distance() as isize;
-
-            if (ib as isize) < robin_ib {
-                // Found a luckier bucket than me. Better steal his spot.
-                return robin_hood(bucket, robin_ib as usize, hash, k, v);
-            }
-
-            probe = bucket.next();
-            assert!(probe.index() != ib + size + 1);
-        }
+    default fn safeguarded_search(&mut self, key: &K, hash: SafeHash)
+                                 -> InternalEntry<K, V, &mut RawTable<K, V>> {
+        search_hashed(&mut self.table, hash, |k| k == key)
     }
 }
 
 macro_rules! specialize {
     (K = $key_type:ty; $($type_var:ident),*) => (
-        impl<V, $($type_var),*> SpecializedInsert<$key_type, V> for HashMap<$key_type, V, AdaptiveState> {
+        impl<V, $($type_var),*> SafeguardedSearch<$key_type, V>
+                                for HashMap<$key_type, V, AdaptiveState> {
             #[inline]
-            fn specialized_insert_or_replace_with<'a, F>(
-                &'a mut self,
-                hash: SafeHash,
-                k: $key_type,
-                v: V,
-                mut found_existing: F
-            ) -> &'a mut V
-                where F: FnMut(&mut $key_type, &mut V, $key_type, V),
-            {
-                // Worst case, we'll find one empty bucket among `size + 1` buckets.
-                let size = self.table.size();
-                let mut probe = Bucket::new(DerefMapToTable(self), hash);
-                let ib = probe.index();
-
-                for _ in 0 .. DISPLACEMENT_THRESHOLD {
-                    let mut bucket = match probe.peek() {
-                        Empty(bucket) => {
-                            // Found a hole!
-                            return bucket.put(hash, k, v).into_mut_refs().1;
-                        }
-                        Full(bucket) => bucket
-                    };
-
-                    // hash matches?
-                    if bucket.hash() == hash {
-                        // key matches?
-                        if k == *bucket.read_mut().0 {
-                            let (bucket_k, bucket_v) = bucket.into_mut_refs();
-                            debug_assert!(k == *bucket_k);
-                            // Key already exists. Get its reference.
-                            found_existing(bucket_k, bucket_v, k, v);
-                            return bucket_v;
+            fn safeguarded_search(&mut self, key: &$key_type, hash: SafeHash)
+                                 -> InternalEntry<$key_type, V, &mut RawTable<$key_type, V>> {
+                let table_capacity = self.table.capacity();
+                let entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
+                match entry {
+                    InternalEntry::Occupied { elem } => {
+                        // This should compile down to a no-op.
+                        InternalEntry::Occupied { elem: elem.convert_table() }
+                    }
+                    InternalEntry::TableIsEmpty => {
+                        InternalEntry::TableIsEmpty
+                    }
+                    InternalEntry::Vacant { elem, hash } => {
+                        let index = match elem {
+                            NeqElem(ref bucket, _) => bucket.index(),
+                            NoElem(ref bucket) => bucket.index(),
+                        };
+                        // Copied from FullBucket::displacement.
+                        let displacement =
+                            index.wrapping_sub(hash.inspect() as usize) & (table_capacity - 1);
+                        if displacement > DISPLACEMENT_THRESHOLD {
+                            let map = match elem {
+                                NeqElem(bucket, _) => {
+                                    bucket.into_table()
+                                }
+                                NoElem(bucket) => {
+                                    bucket.into_table()
+                                }
+                            };
+                            // Probe sequence is too long.
+                            // Adapt to safe hashing if desirable.
+                            maybe_adapt_to_safe_hashing(map.0);
+                            search_hashed(&mut map.0.table, hash, |k| k == key)
+                        } else {
+                            // This should compile down to a no-op.
+                            match elem {
+                                NeqElem(bucket, ib) => {
+                                    InternalEntry::Vacant {
+                                        elem: NeqElem(bucket.convert_table(), ib),
+                                        hash: hash,
+                                    }
+                                }
+                                NoElem(bucket) => {
+                                    InternalEntry::Vacant {
+                                        elem: NoElem(bucket.convert_table()),
+                                        hash: hash,
+                                    }
+                                }
+                            }
                         }
                     }
-
-                    let robin_ib = bucket.index() as isize - bucket.distance() as isize;
-
-                    if (ib as isize) < robin_ib {
-                        // Found a luckier bucket than me. Better steal his spot.
-                        return robin_hood(bucket, robin_ib as usize, hash, k, v);
-                    }
-
-                    probe = bucket.next();
-                    assert!(probe.index() != ib + size + 1);
                 }
-                let this = probe.into_table().0;
-                // Probe sequence is too long.
-                // Adapt to safe hashing.
-                adapt_to_safe_hashing(this);
-                this.specialized_insert_or_replace_with(hash, k, v, found_existing)
             }
         }
 
         // For correct creation of HashMap.
         impl<V, $($type_var),*> Default for HashMap<$key_type, V, AdaptiveState> {
             fn default() -> Self {
-                HashMap::with_hash_state(AdaptiveState::new_fast())
+                HashMap::with_hasher(AdaptiveState::new_fast())
             }
         }
     )
 }
 
 #[cold]
-fn adapt_to_safe_hashing<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
+fn maybe_adapt_to_safe_hashing<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
     where K: Eq + Hash
 {
     let capacity = map.table.capacity();
@@ -173,7 +126,7 @@ fn adapt_to_safe_hashing<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
     if load_factor >= LOAD_FACTOR_THRESHOLD {
         map.resize(capacity * 2);
     } else {
-        map.hash_state.switch_to_safe_hashing();
+        map.hash_builder.switch_to_safe_hashing();
         let old_table = replace(&mut map.table, RawTable::new(capacity));
         for (_, k, v) in old_table.into_iter() {
             let hash = map.make_hash(&k);
@@ -206,6 +159,13 @@ impl<'a, K, V, S> Deref for DerefMapToTable<'a, K, V, S> {
 impl<'a, K, V, S> DerefMut for DerefMapToTable<'a, K, V, S> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0.table
+    }
+}
+
+impl<'a, K, V, S> Into<&'a mut RawTable<K, V>> for DerefMapToTable<'a, K, V, S> {
+    #[inline(always)]
+    fn into(self) -> &'a mut RawTable<K, V> {
         &mut self.0.table
     }
 }
@@ -245,11 +205,11 @@ mod test_adaptive_map {
         for &value in (&mut values).take(DISPLACEMENT_THRESHOLD - 1) {
             map.insert(value, ());
         }
-        assert!(!map.hash_state.uses_safe_hashing());
+        assert!(!map.hash_builder.uses_safe_hashing());
         for &value in values.take(8) {
             map.insert(value, ());
         }
-        assert!(map.hash_state.uses_safe_hashing());
+        assert!(map.hash_builder.uses_safe_hashing());
     }
 
     #[test]
