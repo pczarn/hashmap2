@@ -54,38 +54,37 @@ impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
     }
 }
 
-macro_rules! specialize {
-    (K = $key_type:ty; $($type_var:ident),*) => (
-        impl<V, $($type_var),*> SafeguardedSearch<$key_type, V>
-                                for HashMap<$key_type, V, AdaptiveState> {
-            #[inline]
-            fn safeguarded_search(&mut self, key: &$key_type, hash: SafeHash)
-                                 -> InternalEntryMut<$key_type, V> {
+impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
+    where K: Eq + OneshotHash
+{
+    #[inline]
+    fn safeguarded_search(&mut self, key: &K, hash: SafeHash)
+                         -> InternalEntryMut<K, V> {
 
-                let table_capacity = self.table.capacity();
-                let entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
-                match entry {
-                    InternalEntry::Occupied { elem } => {
-                        // This should compile down to a no-op.
-                        InternalEntry::Occupied { elem: elem.convert_table() }
-                    }
-                    InternalEntry::TableIsEmpty => {
-                        InternalEntry::TableIsEmpty
-                    }
-                    InternalEntry::Vacant { elem, hash } => {
-                        safeguard_vacant_entry(elem, key, hash, table_capacity)
-                    }
-                }
+        let table_capacity = self.table.capacity();
+        let entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
+        match entry {
+            InternalEntry::Occupied { elem } => {
+                // This should compile down to a no-op.
+                InternalEntry::Occupied { elem: elem.convert_table() }
+            }
+            InternalEntry::TableIsEmpty => {
+                InternalEntry::TableIsEmpty
+            }
+            InternalEntry::Vacant { elem, hash } => {
+                safeguard_vacant_entry(elem, key, hash, table_capacity)
             }
         }
+    }
+}
 
-        // For correct creation of HashMap.
-        impl<V, $($type_var),*> Default for HashMap<$key_type, V, AdaptiveState> {
-            fn default() -> Self {
-                HashMap::with_hasher(AdaptiveState::new_fast())
-            }
-        }
-    )
+// For correct creation of HashMap.
+impl<K, V> Default for HashMap<K, V, AdaptiveState>
+    where K: Eq + OneshotHash
+{
+    fn default() -> Self {
+        HashMap::with_hasher(AdaptiveState::new_fast())
+    }
 }
 
 #[inline]
@@ -161,16 +160,23 @@ fn maybe_adapt_to_safe_hashing<'a, K, V>(
     search_hashed(&mut map.table, hash, |k| k == key)
 }
 
-specialize! { K = u8; }
-specialize! { K = i8; }
-specialize! { K = u16; }
-specialize! { K = i16; }
-specialize! { K = u32; }
-specialize! { K = i32; }
-specialize! { K = u64; }
-specialize! { K = i64; }
-specialize! { K = *const T; T }
-specialize! { K = *mut T; T }
+pub trait OneshotHash: Hash {}
+
+impl OneshotHash for i8 {}
+impl OneshotHash for u8 {}
+impl OneshotHash for u16 {}
+impl OneshotHash for i16 {}
+impl OneshotHash for u32 {}
+impl OneshotHash for i32 {}
+impl OneshotHash for u64 {}
+impl OneshotHash for i64 {}
+impl OneshotHash for usize {}
+impl OneshotHash for isize {}
+impl OneshotHash for char {}
+impl<T> OneshotHash for *const T {}
+impl<T> OneshotHash for *mut T {}
+impl<'a, T> OneshotHash for &'a T where T: OneshotHash {}
+impl<'a, T> OneshotHash for &'a mut T where T: OneshotHash {}
 
 struct DerefMapToTable<'a, K: 'a, V: 'a, S: 'a>(&'a mut HashMap<K, V, S>);
 
