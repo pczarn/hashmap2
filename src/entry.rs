@@ -170,6 +170,8 @@ impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
     }
 }
 
+// These fns are public, but the entire module is not.
+
 #[inline]
 pub fn from_internal<K, V>(internal: InternalEntry<K, V, &mut RawTable<K, V>>, key: Option<K>)
                           -> Option<Entry<K, V>> {

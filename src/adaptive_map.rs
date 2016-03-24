@@ -30,6 +30,10 @@ const DISPLACEMENT_THRESHOLD: usize = 128;
 // Otherwise, we grow the table.
 const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
 
+// The displacement threshold should be high enough so that even with the maximal load factor,
+// it's very rarely exceeded.
+// As the load approaches 90%, displacements larger than ~ 32 are much more probable.
+
 // Avoid problems with private types in public interfaces.
 pub type InternalEntryMut<'a, K: 'a, V: 'a> = InternalEntry<K, V, &'a mut RawTable<K, V>>;
 
@@ -101,6 +105,7 @@ fn safeguard_vacant_entry<'a, K, V>(
     let displacement = index.wrapping_sub(hash.inspect() as usize) & (table_capacity - 1);
     if displacement > DISPLACEMENT_THRESHOLD {
         // Probe sequence is too long.
+        // This branch is very unlikely.
         maybe_adapt_to_safe_hashing(elem, key, hash)
     } else {
         // This should compile down to a no-op.
@@ -143,6 +148,9 @@ fn maybe_adapt_to_safe_hashing<'a, K, V>(
     if load_factor >= LOAD_FACTOR_THRESHOLD {
         map.resize(capacity * 2);
     } else {
+        // Taking this branch is as rare as proton decay. The average time between two executions of
+        // this branch is 20 billion years. We assume continuous insertion on a single CPU
+        // core, without intentional DoS attack.
         map.hash_builder.switch_to_safe_hashing();
         let old_table = replace(&mut map.table, RawTable::new(capacity));
         for (_, k, v) in old_table.into_iter() {
@@ -217,7 +225,7 @@ mod test_adaptive_map {
     ];
 
     #[test]
-    fn test_dos_attack() {
+    fn test_dos_safeguard() {
         let mut map = HashMap::new();
         let mut values = VALUES.iter();
         for &value in (&mut values).take(DISPLACEMENT_THRESHOLD - 1) {
