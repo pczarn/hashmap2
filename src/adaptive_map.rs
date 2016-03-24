@@ -40,6 +40,24 @@ const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
 // low (~ 20%). We choose 62.5%, because it's a simple fraction (5/8), and its half is 31.25%.
 // (When a map is grown, the load factor is halved.)
 
+// At a load factor of α, the odds of finding the target bucket after exactly n
+// unsuccesful probes[1] are
+//
+// Pr_α{displacement = n} =
+// (1 - α) / α * ∑_{k≥1} e^(-kα) * (kα)^(k+n) / (k + n)! * (1 - kα / (k + n + 1))
+//
+// We use this formula to find the probability of loading half of a cache line, as well as
+// the probability of triggering the DoS safeguard with an insertion:
+//
+// Pr_0.625{displacement > 3} = 0.036
+// Pr_0.625{displacement > 128} = 2.284 * 10^-49
+
+// Pr_0.909{displacement > 3} = 0.487
+// Pr_0.909{displacement > 128} = 1.601 * 10^-11
+//
+// 1. Alfredo Viola (2005). Distributional analysis of Robin Hood linear probing
+//    hashing with buckets.
+
 // TODO: add one-shot hashing for String, str, arrays and other types.
 // TODO: consider adding a limit for the number of fully equal hashes in a probe sequence.
 // Fully equal hashes cause key comparison, which might be a problem for large string keys.
