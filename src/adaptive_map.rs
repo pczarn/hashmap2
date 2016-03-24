@@ -32,7 +32,17 @@ const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
 
 // The displacement threshold should be high enough so that even with the maximal load factor,
 // it's very rarely exceeded.
-// As the load approaches 90%, displacements larger than ~ 32 are much more probable.
+// As the load approaches 90%, displacements larger than ~ 20 are much more probable.
+// On the other hand, the threshold should be low enough so that the same number of hashes
+// easily fits in the cache and takes a reasonable time to iterate through.
+
+// The load factor threshold should be relatively low, but high enough so that its half is not very
+// low (~ 20%). We choose 62.5%, because it's a simple fraction (5/8), and its half is 31.25%.
+// (When a map is grown, the load factor is halved.)
+
+// TODO: add one-shot hashing for String, str, arrays and other types.
+// TODO: consider adding a limit for the number of fully equal hashes in a probe sequence.
+// Fully equal hashes cause key comparison, which might be a problem for large string keys.
 
 // Avoid problems with private types in public interfaces.
 pub type InternalEntryMut<'a, K: 'a, V: 'a> = InternalEntry<K, V, &'a mut RawTable<K, V>>;
@@ -65,7 +75,7 @@ impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
         let entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
         match entry {
             InternalEntry::Occupied { elem } => {
-                // This should compile down to a no-op.
+                // This should compile down to a simple copy.
                 InternalEntry::Occupied { elem: elem.convert_table() }
             }
             InternalEntry::TableIsEmpty => {
@@ -83,6 +93,9 @@ impl<K, V> Default for HashMap<K, V, AdaptiveState>
     where K: Eq + OneshotHash
 {
     fn default() -> Self {
+        // We use the fast, deterministic hasher.
+        // TODO: load a seed from the TLS for nondeterministic iteration order.
+        // See https://github.com/rust-lang/rust/pull/31356
         HashMap::with_hasher(AdaptiveState::new_fast())
     }
 }
@@ -102,12 +115,13 @@ fn safeguard_vacant_entry<'a, K, V>(
     };
     // Copied from FullBucket::displacement.
     let displacement = index.wrapping_sub(hash.inspect() as usize) & (table_capacity - 1);
+    // Check displacement.
     if displacement > DISPLACEMENT_THRESHOLD {
         // Probe sequence is too long.
         // This branch is very unlikely.
         maybe_adapt_to_safe_hashing(elem, key, hash)
     } else {
-        // This should compile down to a no-op.
+        // This should compile down to a simple copy.
         match elem {
             NeqElem(bucket, ib) => {
                 InternalEntry::Vacant {
@@ -125,7 +139,7 @@ fn safeguard_vacant_entry<'a, K, V>(
     }
 }
 
-// Adapt to safe hashing if desirable.
+// Adapt to safe hashing, if desirable.
 #[cold]
 fn maybe_adapt_to_safe_hashing<'a, K, V>(
     elem: VacantEntryState<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>,
@@ -147,9 +161,8 @@ fn maybe_adapt_to_safe_hashing<'a, K, V>(
     if load_factor >= LOAD_FACTOR_THRESHOLD {
         map.resize(capacity * 2);
     } else {
-        // Taking this branch is as rare as proton decay. The average time between two executions of
-        // this branch is 20 billion years. We assume continuous insertion on a single CPU
-        // core, without intentional DoS attack.
+        // Taking this branch is extremely rare -- as rare as proton decay. That's assuming
+        // continuous insertion on a single CPU core, without intentional DoS attack.
         map.hash_builder.switch_to_safe_hashing();
         let old_table = replace(&mut map.table, RawTable::new(capacity));
         for (_, k, v) in old_table.into_iter() {

@@ -98,8 +98,10 @@ impl Hasher for AdaptiveHasher {
     #[inline]
     fn write(&mut self, msg: &[u8]) {
         if let Some(ref mut hasher) = self.safe_hasher {
+            // Use safe hashing.
             hasher.write(msg);
         } else {
+            // Use fast hashing.
             let msg_data = unsafe {
                 if msg.len() <= 8 {
                     load_u64_le(msg, msg.len())
@@ -114,8 +116,10 @@ impl Hasher for AdaptiveHasher {
     #[inline]
     fn finish(&self) -> u64 {
         if let Some(ref hasher) = self.safe_hasher {
+            // Use safe hashing.
             hasher.finish()
         } else {
+            // Use fast hashing.
             self.hash
         }
     }
