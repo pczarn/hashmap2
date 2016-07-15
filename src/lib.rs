@@ -16,7 +16,8 @@
     oom,
     unique,
     unsafe_no_drop_flag,
-    specialization
+    specialization,
+    sip_hash_13,
 )]
 
 #![cfg_attr(test, feature(inclusive_range_syntax))]

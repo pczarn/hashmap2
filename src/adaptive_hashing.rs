@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::hash::{BuildHasher, SipHasher, Hasher};
+use std::hash::{BuildHasher, SipHasher13, Hasher};
 
 use sip_hash_state::SipHashState;
 
@@ -61,7 +61,7 @@ impl BuildHasher for AdaptiveState {
 }
 
 pub struct AdaptiveHasher {
-    safe_hasher: Option<SipHasher>,
+    safe_hasher: Option<SipHasher13>,
     hash: u64,
 }
 

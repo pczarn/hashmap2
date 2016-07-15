@@ -8,10 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::hash::{BuildHasher, SipHasher};
+use std::hash::{BuildHasher, SipHasher13};
 use rand::{self, Rng};
 
-/// `SipHashState` is a random state for `HashMap` types.
+/// `SipHashState` is the default state for `HashMap` types.
 ///
 /// A particular instance `SipHashState` will create the same instances of
 /// `Hasher`, but the hashers created by two different `SipHashState`
@@ -27,22 +27,22 @@ impl SipHashState {
     #[inline]
     #[allow(deprecated)] // rand
     pub fn new() -> SipHashState {
-        let mut r = rand::thread_rng();
-        SipHashState { k0: r.gen(), k1: r.gen() }
+        thread_local!(static KEYS: (u64, u64) = {
+            let r = rand::OsRng::new();
+            let mut r = r.expect("failed to create an OS RNG");
+            (r.gen(), r.gen())
+        });
+
+        KEYS.with(|&(k0, k1)| {
+            SipHashState { k0: k0, k1: k1 }
+        })
     }
 }
 
 impl BuildHasher for SipHashState {
-    type Hasher = SipHasher;
+    type Hasher = SipHasher13;
     #[inline]
-    fn build_hasher(&self) -> SipHasher {
-        SipHasher::new_with_keys(self.k0, self.k1)
-    }
-}
-
-impl Default for SipHashState {
-    #[inline]
-    fn default() -> SipHashState {
-        SipHashState::new()
+    fn build_hasher(&self) -> SipHasher13 {
+        SipHasher13::new_with_keys(self.k0, self.k1)
     }
 }
