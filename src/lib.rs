@@ -562,6 +562,7 @@ impl<K: Hash + Eq, V> HashMap<K, V, RandomState> {
     /// ```
     #[inline]
     pub fn new() -> HashMap<K, V, RandomState> {
+        // This must go though HashMap::default(), which is specialized.
         Default::default()
     }
 
@@ -575,6 +576,7 @@ impl<K: Hash + Eq, V> HashMap<K, V, RandomState> {
     /// ```
     #[inline]
     pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
+        // This must go though HashMap::default(), which is specialized.
         let map: Self = Default::default();
         HashMap::with_capacity_and_hasher(capacity, map.hash_builder)
     }
@@ -1296,6 +1298,7 @@ impl<K, V, S> Default for HashMap<K, V, S>
     where K: Eq + Hash,
           S: BuildHasher + Default,
 {
+    // There is a separate implementation of Default for HashMap<K, V, AdaptiveState>.
     default fn default() -> HashMap<K, V, S> {
         HashMap::with_hasher(Default::default())
     }
