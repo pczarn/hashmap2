@@ -1299,6 +1299,7 @@ impl<K, V, S> Default for HashMap<K, V, S>
           S: BuildHasher + Default,
 {
     // There is a separate implementation of Default for HashMap<K, V, AdaptiveState>.
+    #[inline]
     default fn default() -> HashMap<K, V, S> {
         HashMap::with_hasher(Default::default())
     }

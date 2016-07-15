@@ -42,6 +42,7 @@ impl AdaptiveState {
 
 // For correct creation of HashMap.
 impl Default for AdaptiveState {
+    #[inline]
     fn default() -> Self {
         let mut this = AdaptiveState::new_fast();
         this.switch_to_safe_hashing();
