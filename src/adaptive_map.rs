@@ -127,6 +127,7 @@ fn safeguard_vacant_entry<'a, K, V>(
         // This branch is very unlikely.
         let map = elem.into_table();
         reduce_displacement(map.0);
+        let hash = map.0.make_hash(key);
         search_hashed(map, hash, |k| k == key)
     } else {
         // This should compile down to a simple copy.
@@ -229,5 +230,18 @@ mod test_adaptive_map {
             map.insert(value, ());
         }
         assert!(map.hash_builder.uses_safe_hashing());
+    }
+
+    // Regression test
+    #[test]
+    fn test_safeguarded_insertion() {
+        let mut map = HashMap::new();
+        let values = VALUES.iter().enumerate();
+        for (i, &value) in values.clone() {
+            map.insert(value, i);
+        }
+        for (i, &value) in values {
+            assert_eq!(map[&value], i);
+        }
     }
 }
