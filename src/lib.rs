@@ -40,7 +40,8 @@ use std::iter::{self, Iterator, ExactSizeIterator, IntoIterator, FromIterator, E
 use std::mem::{self, replace};
 use std::ops::{Deref, FnMut, Index};
 use std::option::Option::{Some, None};
-use adaptive_map::SafeguardedSearch;
+use adaptive_hashing::AdaptiveState;
+use adaptive_map::{SafeguardedSearch, OneshotHash};
 use entry::{NoElem, NeqElem, Occupied, Vacant};
 use internal_entry::InternalEntry;
 use recover::Recover;
@@ -1296,10 +1297,22 @@ impl<K, V, S> Default for HashMap<K, V, S>
     where K: Eq + Hash,
           S: BuildHasher + Default,
 {
-    // There is a separate implementation of Default for HashMap<K, V, AdaptiveState>.
     #[inline]
     default fn default() -> HashMap<K, V, S> {
         HashMap::with_hasher(Default::default())
+    }
+}
+
+// For correct creation of HashMap.
+impl<K, V> Default for HashMap<K, V, AdaptiveState>
+    where K: Eq + OneshotHash
+{
+    #[inline]
+    fn default() -> Self {
+        // We use the fast, deterministic hasher.
+        // TODO: load a seed from the TLS for nondeterministic iteration order.
+        // See https://github.com/rust-lang/rust/pull/31356
+        HashMap::with_hasher(AdaptiveState::new_for_fast_hashing())
     }
 }
 

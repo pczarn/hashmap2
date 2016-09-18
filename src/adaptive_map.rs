@@ -65,12 +65,30 @@ const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
 // Avoid problems with private types in public interfaces.
 pub type InternalEntryMut<'a, K: 'a, V: 'a> = InternalEntry<K, V, &'a mut RawTable<K, V>>;
 
+pub trait OneshotHash: Hash {}
+
 // We have this trait, because specialization doesn't work for inherent impls yet.
 pub trait SafeguardedSearch<K, V> {
     // Method names are changed, because inherent methods shadow trait impl
     // methods.
     fn safeguarded_search(&mut self, key: &K, hash: SafeHash) -> InternalEntryMut<K, V>;
 }
+
+impl OneshotHash for i8 {}
+impl OneshotHash for u8 {}
+impl OneshotHash for u16 {}
+impl OneshotHash for i16 {}
+impl OneshotHash for u32 {}
+impl OneshotHash for i32 {}
+impl OneshotHash for u64 {}
+impl OneshotHash for i64 {}
+impl OneshotHash for usize {}
+impl OneshotHash for isize {}
+impl OneshotHash for char {}
+impl<T> OneshotHash for *const T {}
+impl<T> OneshotHash for *mut T {}
+impl<'a, T> OneshotHash for &'a T where T: OneshotHash {}
+impl<'a, T> OneshotHash for &'a mut T where T: OneshotHash {}
 
 impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
     where K: Eq + Hash,
@@ -106,18 +124,6 @@ impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
     }
 }
 
-// For correct creation of HashMap.
-impl<K, V> Default for HashMap<K, V, AdaptiveState>
-    where K: Eq + OneshotHash
-{
-    fn default() -> Self {
-        // We use the fast, deterministic hasher.
-        // TODO: load a seed from the TLS for nondeterministic iteration order.
-        // See https://github.com/rust-lang/rust/pull/31356
-        HashMap::with_hasher(AdaptiveState::new_fast())
-    }
-}
-
 #[inline]
 fn safeguard_vacant_entry<'a, K, V>(
     elem: VacantEntryState<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>,
@@ -137,7 +143,15 @@ fn safeguard_vacant_entry<'a, K, V>(
     if displacement > DISPLACEMENT_THRESHOLD {
         // Probe sequence is too long.
         // This branch is very unlikely.
-        maybe_adapt_to_safe_hashing(elem, key, hash)
+        let map = match elem {
+            NeqElem(bucket, _) => {
+                bucket.into_table().0
+            }
+            NoElem(bucket) => {
+                bucket.into_table().0
+            }
+        };
+        maybe_adapt_to_safe_hashing(map, key, hash)
     } else {
         // This should compile down to a simple copy.
         match elem {
@@ -160,20 +174,12 @@ fn safeguard_vacant_entry<'a, K, V>(
 // Adapt to safe hashing, if desirable.
 #[cold]
 fn maybe_adapt_to_safe_hashing<'a, K, V>(
-    elem: VacantEntryState<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>,
+    map: &'a mut HashMap<K, V, AdaptiveState>,
     key: &K,
     hash: SafeHash
 ) -> InternalEntryMut<'a, K, V>
     where K: Eq + Hash
 {
-    let map = match elem {
-        NeqElem(bucket, _) => {
-            bucket.into_table().0
-        }
-        NoElem(bucket) => {
-            bucket.into_table().0
-        }
-    };
     let capacity = map.table.capacity();
     let load_factor = map.len() as f32 / capacity as f32;
     if load_factor >= LOAD_FACTOR_THRESHOLD {
@@ -190,24 +196,6 @@ fn maybe_adapt_to_safe_hashing<'a, K, V>(
     }
     search_hashed(&mut map.table, hash, |k| k == key)
 }
-
-pub trait OneshotHash: Hash {}
-
-impl OneshotHash for i8 {}
-impl OneshotHash for u8 {}
-impl OneshotHash for u16 {}
-impl OneshotHash for i16 {}
-impl OneshotHash for u32 {}
-impl OneshotHash for i32 {}
-impl OneshotHash for u64 {}
-impl OneshotHash for i64 {}
-impl OneshotHash for usize {}
-impl OneshotHash for isize {}
-impl OneshotHash for char {}
-impl<T> OneshotHash for *const T {}
-impl<T> OneshotHash for *mut T {}
-impl<'a, T> OneshotHash for &'a T where T: OneshotHash {}
-impl<'a, T> OneshotHash for &'a mut T where T: OneshotHash {}
 
 struct DerefMapToTable<'a, K: 'a, V: 'a, S: 'a>(&'a mut HashMap<K, V, S>);
 

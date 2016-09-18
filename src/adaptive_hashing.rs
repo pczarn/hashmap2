@@ -20,19 +20,25 @@ pub struct AdaptiveState {
 impl AdaptiveState {
     #[inline]
     pub fn new() -> Self {
-        Default::default()
+        AdaptiveState::new_for_safe_hashing()
     }
 
     #[inline]
-    pub fn new_fast() -> Self {
+    pub fn new_for_fast_hashing() -> Self {
         AdaptiveState {
             inner: None
+        }
+    }
+    #[inline]
+    pub fn new_for_safe_hashing() -> Self {
+        AdaptiveState {
+            inner: Some(SipHashState::new())
         }
     }
 
     #[inline]
     pub fn switch_to_safe_hashing(&mut self) {
-        self.inner = Some(SipHashState::new());
+        *self = AdaptiveState::new_for_safe_hashing();
     }
 
     pub fn uses_safe_hashing(&self) -> bool {
@@ -40,13 +46,11 @@ impl AdaptiveState {
     }
 }
 
-// For correct creation of HashMap.
+// For creating HashMap.
 impl Default for AdaptiveState {
     #[inline]
     fn default() -> Self {
-        let mut this = AdaptiveState::new_fast();
-        this.switch_to_safe_hashing();
-        this
+        AdaptiveState::new_for_safe_hashing()
     }
 }
 
