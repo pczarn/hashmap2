@@ -125,10 +125,10 @@ fn safeguard_vacant_entry<'a, K, V>(
     if elem.displacement(hash) > DISPLACEMENT_THRESHOLD {
         // Probe sequence is too long. We must reduce its length.
         // This branch is very unlikely.
-        let map = elem.into_table();
-        reduce_displacement(map.0);
-        let hash = map.0.make_hash(key);
-        search_hashed(map, hash, |k| k == key)
+        let map = elem.into_table().0;
+        reduce_displacement(map);
+        let hash = map.make_hash(key);
+        search_hashed(DerefMapToTable(map), hash, |k| k == key)
     } else {
         // This should compile down to a simple copy.
         InternalEntry::Vacant {
