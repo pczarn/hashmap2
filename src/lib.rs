@@ -11,11 +11,9 @@
     alloc,
     core_intrinsics,
     dropck_parametricity,
-    filling_drop,
     heap_api,
     oom,
     unique,
-    unsafe_no_drop_flag,
     specialization,
     sip_hash_13,
 )]
