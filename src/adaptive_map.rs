@@ -19,8 +19,6 @@ use table::{
 };
 use internal_entry::InternalEntry;
 use entry::VacantEntryState;
-use entry::VacantEntryState::NeqElem;
-use entry::VacantEntryState::NoElem;
 use HashMap;
 use search_hashed;
 
@@ -107,94 +105,64 @@ impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
     fn safeguarded_search(&mut self, key: &K, hash: SafeHash)
                          -> InternalEntryMut<K, V> {
 
-        let table_capacity = self.table.capacity();
-        let entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
-        match entry {
-            InternalEntry::Occupied { elem } => {
-                // This should compile down to a simple copy.
-                InternalEntry::Occupied { elem: elem.convert_table() }
-            }
-            InternalEntry::TableIsEmpty => {
-                InternalEntry::TableIsEmpty
-            }
-            InternalEntry::Vacant { elem, hash } => {
-                safeguard_vacant_entry(elem, key, hash, table_capacity)
-            }
+        let mut entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
+        if let InternalEntry::Vacant { elem, hash } = entry {
+            entry = safeguard_vacant_entry(elem, hash, key)
         }
+        entry.convert_table()
     }
 }
 
 #[inline]
 fn safeguard_vacant_entry<'a, K, V>(
     elem: VacantEntryState<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>,
-    key: &K,
     hash: SafeHash,
-    table_capacity: usize,
-) -> InternalEntryMut<'a, K, V>
+    key: &K,
+) -> InternalEntry<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>
     where K: Eq + Hash
 {
-    let index = match elem {
-        NeqElem(ref bucket, _) => bucket.index(),
-        NoElem(ref bucket) => bucket.index(),
-    };
-    // Copied from FullBucket::displacement.
-    let displacement = index.wrapping_sub(hash.inspect() as usize) & (table_capacity - 1);
     // Check displacement.
-    if displacement > DISPLACEMENT_THRESHOLD {
-        // Probe sequence is too long.
+    if elem.displacement(hash) > DISPLACEMENT_THRESHOLD {
+        // Probe sequence is too long. We must reduce its length.
         // This branch is very unlikely.
-        let map = match elem {
-            NeqElem(bucket, _) => {
-                bucket.into_table().0
-            }
-            NoElem(bucket) => {
-                bucket.into_table().0
-            }
-        };
-        maybe_adapt_to_safe_hashing(map, key, hash)
+        let map = elem.into_table();
+        reduce_displacement(map.0);
+        search_hashed(map, hash, |k| k == key)
     } else {
         // This should compile down to a simple copy.
-        match elem {
-            NeqElem(bucket, ib) => {
-                InternalEntry::Vacant {
-                    elem: NeqElem(bucket.convert_table(), ib),
-                    hash: hash,
-                }
-            }
-            NoElem(bucket) => {
-                InternalEntry::Vacant {
-                    elem: NoElem(bucket.convert_table()),
-                    hash: hash,
-                }
-            }
+        InternalEntry::Vacant {
+            elem: elem,
+            hash: hash,
         }
     }
 }
 
 // Adapt to safe hashing, if desirable.
 #[cold]
-fn maybe_adapt_to_safe_hashing<'a, K, V>(
-    map: &'a mut HashMap<K, V, AdaptiveState>,
-    key: &K,
-    hash: SafeHash
-) -> InternalEntryMut<'a, K, V>
+fn reduce_displacement<'a, K, V>(map: &'a mut HashMap<K, V, AdaptiveState>)
     where K: Eq + Hash
 {
-    let capacity = map.table.capacity();
-    let load_factor = map.len() as f32 / capacity as f32;
+    let table_capacity = map.table.capacity();
+    let load_factor = map.len() as f32 / table_capacity as f32;
     if load_factor >= LOAD_FACTOR_THRESHOLD {
-        map.resize(capacity * 2);
+        map.resize(table_capacity * 2);
     } else {
         // Taking this branch is extremely rare -- as rare as proton decay. That's assuming
         // continuous insertion on a single CPU core, without intentional DoS attack.
         map.hash_builder.switch_to_safe_hashing();
-        let old_table = replace(&mut map.table, RawTable::new(capacity));
-        for (_, k, v) in old_table.into_iter() {
-            let hash = map.make_hash(&k);
-            map.insert_hashed_nocheck(hash, k, v);
-        }
+        rebuild_table(map);
     }
-    search_hashed(&mut map.table, hash, |k| k == key)
+}
+
+fn rebuild_table<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
+    where K: Eq + Hash
+{
+    let table_capacity = map.table.capacity();
+    let old_table = replace(&mut map.table, RawTable::new(table_capacity));
+    for (_, k, v) in old_table.into_iter() {
+        let hash = map.make_hash(&k);
+        map.insert_hashed_nocheck(hash, k, v);
+    }
 }
 
 struct DerefMapToTable<'a, K: 'a, V: 'a, S: 'a>(&'a mut HashMap<K, V, S>);
