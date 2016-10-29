@@ -71,7 +71,7 @@ pub trait OneshotHash: Hash {}
 pub trait SafeguardedSearch<K, V> {
     // Method names are changed, because inherent methods shadow trait impl
     // methods.
-    fn safeguarded_search(&mut self, key: &K, hash: SafeHash) -> InternalEntryMut<K, V>;
+    fn reduce_displacement(&mut self);
 }
 
 impl OneshotHash for i8 {}
@@ -133,14 +133,8 @@ impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
     default fn safeguarded_search(key: &K, hash: SafeHash) -> InternalEntryMut<K, V> {
         search_hashed(&mut self.table, hash, |k| k == key)
     }
-    #[inline]
-    default fn safeguard_insertion(bucket: FullBucketMut<>) {
-        search_hashed(&mut self.table, hash, |k| k == key)
-    }
-    #[inline]
-    default fn safeguard_forward_shifted(bucket: EmptyBucket<FullBucket<>>) -> InternalEntryMut<K, V> {
-        // bucket.into_table().into_mut_refs().1;
-        true
+    default fn reduce_displacement(&mut self) {
+        // nothing to do.
     }
 }
 
@@ -160,9 +154,10 @@ impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
 
     #[cold]
     fn reduce_displacement(&mut self) {
-        if self.table.size() as f32 / self.table.capacity() >= LOAD_FACTOR_THRESHOLD {
-            let new_capacity = max(min_cap.next_power_of_two(), INITIAL_CAPACITY);
+        let load_factor = self.table.size() as f32 / self.table.capacity() as f32;
+        if load_factor >= LOAD_FACTOR_THRESHOLD {
             self.resize(self.table.capacity() * 2);
+            self.table.set_flag(false);
         } else {
             // Taking this branch is extremely rare, assuming no intentional DoS attack.
             self.hash_builder.switch_to_safe_hashing();
@@ -196,28 +191,6 @@ fn safeguard_vacant_entry<'a, K, V>(
     }
 }
 
-#[cold]
-fn reduce_displacement_and_search<'a, K, V>() -> FullBucket<> {
-
-}
-
-// Adapt to safe hashing, if desirable.
-#[cold]
-fn reduce_displacement<'a, K, V>(map: &'a mut HashMap<K, V, AdaptiveState>)
-    where K: Eq + Hash
-{
-    let table_capacity = map.table.capacity();
-    let load_factor = map.len() as f32 / table_capacity as f32;
-    if load_factor >= LOAD_FACTOR_THRESHOLD {
-        map.resize(table_capacity * 2);
-    } else {
-        // Taking this branch is extremely rare -- as rare as proton decay. That's assuming
-        // continuous insertion on a single CPU core, without intentional DoS attack.
-        map.hash_builder.switch_to_safe_hashing();
-        rebuild_table(map);
-    }
-}
-
 fn rebuild_table<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
     where K: Eq + Hash
 {
@@ -226,28 +199,6 @@ fn rebuild_table<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
     for (_, k, v) in old_table.into_iter() {
         let hash = map.make_hash(&k);
         map.insert_hashed_nocheck(hash, k, v);
-    }
-}
-
-impl<'a, K, V, S> Deref for DerefMapToTable<'a, K, V, S> {
-    type Target = RawTable<K, V>;
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        &self.0.table
-    }
-}
-
-impl<'a, K, V, S> DerefMut for DerefMapToTable<'a, K, V, S> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0.table
-    }
-}
-
-impl<'a, K, V, S> Into<&'a mut RawTable<K, V>> for DerefMapToTable<'a, K, V, S> {
-    #[inline(always)]
-    fn into(self) -> &'a mut RawTable<K, V> {
-        &mut self.0.table
     }
 }
 
