@@ -15,6 +15,7 @@ use table::{EmptyBucket, FullBucket, SafeHash, RawTable};
 use internal_entry::InternalEntry;
 use pop_internal;
 use robin_hood;
+use adaptive_map;
 
 pub use self::Entry::*;
 pub use self::VacantEntryState::*;
@@ -149,8 +150,10 @@ impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
             NeqElem(bucket, ib) => {
                 robin_hood(bucket, ib, self.hash, self.key, value)
             }
-            NoElem(bucket) => {
-                bucket.put(self.hash, self.key, value).into_mut_refs().1
+            NoElem(bucket) =>
+                let bucket = bucket.put(self.hash, self.key, value);
+                let bucket = adaptive_map::safeguard_insertion(bucket);
+                bucket.into_mut_refs().1
             }
         }
     }

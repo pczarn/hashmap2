@@ -484,7 +484,13 @@ fn robin_hood<'a, K: 'a, V: 'a>(bucket: FullBucketMut<'a, K, V>,
                     // bucket, which is a FullBucket on top of a
                     // FullBucketMut, into just one FullBucketMut. The "table"
                     // refers to the inner FullBucketMut in this context.
-                    return bucket.into_table().into_mut_refs().1;
+                    let bucket = safeguard_forward_shifted(bucket, starting_index);
+                    return bucket.into_mut_refs().1;
+                    // if safeguard_forward_shifted(bucket) {
+                    //     return bucket.into_table().into_mut_refs().1;
+                    // } else {
+                    //     return
+                    // }
                 },
                 Full(bucket) => bucket
             };
@@ -681,6 +687,10 @@ impl<K, V, S> HashMap<K, V, S>
     /// map.reserve(10);
     /// ```
     pub fn reserve(&mut self, additional: usize) {
+        if self.table.get_flag() {
+            self.reduce_displacement();
+            self.table.set_flag(false);
+        }
         let new_size = self.len().checked_add(additional).expect("capacity overflow");
         let min_cap = self.resize_policy.min_capacity(new_size);
 
@@ -1157,8 +1167,8 @@ impl<K, V, S> HashMap<K, V, S>
     /// assert_eq!(map[&37], "c");
     /// ```
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
-        let hash = self.make_hash(&k);
         self.reserve(1);
+        let hash = self.make_hash(&k);
         self.insert_hashed_nocheck(hash, k, v)
     }
 

@@ -24,9 +24,11 @@ use search_hashed;
 
 // Beyond this displacement, we switch to safe hashing or grow the table.
 const DISPLACEMENT_THRESHOLD: usize = 128;
+const FORWARD_SHIFT_THRESHOLD: usize = 512;
 // When the map's load factor is below this threshold, we switch to safe hashing.
 // Otherwise, we grow the table.
-const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
+// const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
+const LOAD_FACTOR_THRESHOLD: f32 = 0.2;
 
 // The displacement threshold should be high enough so that even with the maximal load factor,
 // it's very rarely exceeded.
@@ -88,13 +90,57 @@ impl<T> OneshotHash for *mut T {}
 impl<'a, T> OneshotHash for &'a T where T: OneshotHash {}
 impl<'a, T> OneshotHash for &'a mut T where T: OneshotHash {}
 
+#[inline]
+fn safeguard_insertion(bucket: &mut FullBucketMut<K, V>) {
+    if bucket.displacement() > DISPLACEMENT_THRESHOLD {
+        self.table.set_flag(true);
+        // let map = bucket.into_table().0;
+        // reduce_displacement(map);
+        // let hash = map.make_hash(key);
+        // match search_hashed(DerefMapToTable(map), hash, |k| k == key) {
+        //     InternalEntry::Occupied { elem } => {
+        //         elem.convert_table()
+        //     }
+        //     _ => {
+        //         unreachable!()
+        //     }
+        // }
+        // reduce_displacement_and_search(bucket)
+    }
+    bucket
+}
+
+#[inline]
+fn safeguard_forward_shifted(bucket: FullBucket<FullBucket<K, V, &mut RawTable<K, V>>>) -> FullBucket<K, V, &mut RawTable<K, V>> {
+    let end_index = bucket.index();
+    let bucket = bucket.into_table();
+    let start_index = bucket.index();
+    if end_index - start_index > FORWARD_SHIFT_THRESHOLD {
+        self.table.set_flag(true);
+        // let (hash, key, value) = bucket.take();
+        // let map = bucket.into_table();
+        // reduce_displacement(map);
+        // reduce_displacement_and_search(bucket
+    }
+    bucket
+}
+
 impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
     where K: Eq + Hash,
           S: BuildHasher
 {
     #[inline]
-    default fn safeguarded_search(&mut self, key: &K, hash: SafeHash) -> InternalEntryMut<K, V> {
+    default fn safeguarded_search(key: &K, hash: SafeHash) -> InternalEntryMut<K, V> {
         search_hashed(&mut self.table, hash, |k| k == key)
+    }
+    #[inline]
+    default fn safeguard_insertion(bucket: FullBucketMut<>) {
+        search_hashed(&mut self.table, hash, |k| k == key)
+    }
+    #[inline]
+    default fn safeguard_forward_shifted(bucket: EmptyBucket<FullBucket<>>) -> InternalEntryMut<K, V> {
+        // bucket.into_table().into_mut_refs().1;
+        true
     }
 }
 
@@ -110,6 +156,18 @@ impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
             entry = safeguard_vacant_entry(elem, hash, key)
         }
         entry.convert_table()
+    }
+
+    #[cold]
+    fn reduce_displacement(&mut self) {
+        if self.table.size() as f32 / self.table.capacity() >= LOAD_FACTOR_THRESHOLD {
+            let new_capacity = max(min_cap.next_power_of_two(), INITIAL_CAPACITY);
+            self.resize(self.table.capacity() * 2);
+        } else {
+            // Taking this branch is extremely rare, assuming no intentional DoS attack.
+            self.hash_builder.switch_to_safe_hashing();
+            rebuild_table(self);
+        }
     }
 }
 
@@ -136,6 +194,11 @@ fn safeguard_vacant_entry<'a, K, V>(
             hash: hash,
         }
     }
+}
+
+#[cold]
+fn reduce_displacement_and_search<'a, K, V>() -> FullBucket<> {
+
 }
 
 // Adapt to safe hashing, if desirable.
@@ -165,8 +228,6 @@ fn rebuild_table<K, V>(map: &mut HashMap<K, V, AdaptiveState>)
         map.insert_hashed_nocheck(hash, k, v);
     }
 }
-
-struct DerefMapToTable<'a, K: 'a, V: 'a, S: 'a>(&'a mut HashMap<K, V, S>);
 
 impl<'a, K, V, S> Deref for DerefMapToTable<'a, K, V, S> {
     type Target = RawTable<K, V>;
