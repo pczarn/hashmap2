@@ -833,7 +833,7 @@ impl<K, V, S> HashMap<K, V, S>
     /// If the key already exists, the hashtable will be returned untouched
     /// and a reference to the existing element will be returned.
     fn insert_hashed_nocheck(&mut self, hash: SafeHash, k: K, v: V) -> Option<V> {
-        let mut entry = search_hashed(&mut self.table, hash, |key| key == &k).into_entry(k);
+        let entry = search_hashed(&mut self.table, hash, |key| key == &k).into_entry(k);
         match entry {
             Some(Occupied(mut elem)) => {
                 Some(elem.insert(v))

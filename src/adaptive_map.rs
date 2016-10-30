@@ -10,19 +10,15 @@
 
 use std::hash::{Hash, BuildHasher};
 use std::mem::replace;
-use std::ops::{Deref, DerefMut};
 
 use adaptive_hashing::AdaptiveState;
 use table::{
     RawTable,
-    SafeHash,
     FullBucketMut,
     FullBucket,
 };
 use internal_entry::InternalEntry;
-use entry::VacantEntryState;
 use HashMap;
-use search_hashed;
 
 // Beyond this displacement, we switch to safe hashing or grow the table.
 const DISPLACEMENT_THRESHOLD: usize = 128;

@@ -9,7 +9,6 @@
 // except according to those terms.
 
 use std::mem;
-use std::ops::Deref;
 
 use table::{EmptyBucket, FullBucket, SafeHash, RawTable};
 use internal_entry::InternalEntry;
@@ -176,30 +175,6 @@ impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
 
     pub fn set_flag_for_reduce_displacement(&mut self, flag: &'a mut bool) {
         self.reduce_displacement_flag = Some(flag);
-    }
-}
-
-impl<K, V, M> VacantEntryState<K, V, M> {
-    pub fn into_table(self) -> M {
-        match self {
-            NeqElem(bucket, _) => {
-                bucket.into_table()
-            }
-            NoElem(bucket) => {
-                bucket.into_table()
-            }
-        }
-    }
-}
-
-impl<K, V, M> VacantEntryState<K, V, M> where M: Deref<Target=RawTable<K, V>> {
-    pub fn displacement(&self, hash: SafeHash) -> usize {
-        let (index, table_capacity) = match self {
-            &NeqElem(ref bucket, _) => (bucket.index(), bucket.table().capacity()),
-            &NoElem(ref bucket) => (bucket.index(), bucket.table().capacity()),
-        };
-        // Copied from FullBucket::displacement.
-        index.wrapping_sub(hash.inspect() as usize) & (table_capacity - 1)
     }
 }
 
