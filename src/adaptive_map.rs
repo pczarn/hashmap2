@@ -15,7 +15,9 @@ use std::ops::{Deref, DerefMut};
 use adaptive_hashing::AdaptiveState;
 use table::{
     RawTable,
-    SafeHash
+    SafeHash,
+    FullBucketMut,
+    FullBucket,
 };
 use internal_entry::InternalEntry;
 use entry::VacantEntryState;
@@ -72,6 +74,8 @@ pub trait SafeguardedSearch<K, V> {
     // Method names are changed, because inherent methods shadow trait impl
     // methods.
     fn reduce_displacement(&mut self);
+
+    fn is_safeguarded(&self) -> bool;
 }
 
 impl OneshotHash for i8 {}
@@ -91,37 +95,30 @@ impl<'a, T> OneshotHash for &'a T where T: OneshotHash {}
 impl<'a, T> OneshotHash for &'a mut T where T: OneshotHash {}
 
 #[inline]
-fn safeguard_insertion(bucket: &mut FullBucketMut<K, V>) {
-    if bucket.displacement() > DISPLACEMENT_THRESHOLD {
-        self.table.set_flag(true);
-        // let map = bucket.into_table().0;
-        // reduce_displacement(map);
-        // let hash = map.make_hash(key);
-        // match search_hashed(DerefMapToTable(map), hash, |k| k == key) {
-        //     InternalEntry::Occupied { elem } => {
-        //         elem.convert_table()
-        //     }
-        //     _ => {
-        //         unreachable!()
-        //     }
-        // }
-        // reduce_displacement_and_search(bucket)
+pub fn safeguard_insertion<K, V>(
+    bucket: &FullBucketMut<K, V>,
+    reduce_displacement_flag: Option<&mut bool>) {
+    if let Some(flag) = reduce_displacement_flag {
+        if bucket.displacement() > DISPLACEMENT_THRESHOLD {
+            *flag = true;
+        }
     }
-    bucket
 }
 
 #[inline]
-fn safeguard_forward_shifted(bucket: FullBucket<FullBucket<K, V, &mut RawTable<K, V>>>) -> FullBucket<K, V, &mut RawTable<K, V>> {
+pub fn safeguard_forward_shifted<'a, K, V>(
+    bucket: FullBucket<K, V, FullBucket<K, V, &'a mut RawTable<K, V>>>,
+    mut reduce_displacement_flag: Option<&'a mut bool>)
+    -> FullBucket<K, V, &'a mut RawTable<K, V>> {
     let end_index = bucket.index();
     let bucket = bucket.into_table();
     let start_index = bucket.index();
-    if end_index - start_index > FORWARD_SHIFT_THRESHOLD {
-        self.table.set_flag(true);
-        // let (hash, key, value) = bucket.take();
-        // let map = bucket.into_table();
-        // reduce_displacement(map);
-        // reduce_displacement_and_search(bucket
+    if let Some(flag) = reduce_displacement_flag.as_mut() {
+        if end_index - start_index > FORWARD_SHIFT_THRESHOLD {
+            **flag = true;
+        }
     }
+    safeguard_insertion(&bucket, reduce_displacement_flag);
     bucket
 }
 
@@ -129,65 +126,34 @@ impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
     where K: Eq + Hash,
           S: BuildHasher
 {
-    #[inline]
-    default fn safeguarded_search(key: &K, hash: SafeHash) -> InternalEntryMut<K, V> {
-        search_hashed(&mut self.table, hash, |k| k == key)
-    }
     default fn reduce_displacement(&mut self) {
         // nothing to do.
+    }
+
+    default fn is_safeguarded(&self) -> bool {
+        false
     }
 }
 
 impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
     where K: Eq + OneshotHash
 {
-    #[inline]
-    fn safeguarded_search(&mut self, key: &K, hash: SafeHash)
-                         -> InternalEntryMut<K, V> {
-
-        let mut entry = search_hashed(DerefMapToTable(self), hash, |k| k == key);
-        if let InternalEntry::Vacant { elem, hash } = entry {
-            entry = safeguard_vacant_entry(elem, hash, key)
-        }
-        entry.convert_table()
-    }
-
     #[cold]
     fn reduce_displacement(&mut self) {
         let load_factor = self.table.size() as f32 / self.table.capacity() as f32;
         if load_factor >= LOAD_FACTOR_THRESHOLD {
-            self.resize(self.table.capacity() * 2);
-            self.table.set_flag(false);
+            // Probe sequence is too long. We must reduce its length.
+            let new_capacity = self.table.capacity() * 2;
+            self.resize(new_capacity);
         } else {
             // Taking this branch is extremely rare, assuming no intentional DoS attack.
             self.hash_builder.switch_to_safe_hashing();
             rebuild_table(self);
         }
     }
-}
 
-#[inline]
-fn safeguard_vacant_entry<'a, K, V>(
-    elem: VacantEntryState<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>,
-    hash: SafeHash,
-    key: &K,
-) -> InternalEntry<K, V, DerefMapToTable<'a, K, V, AdaptiveState>>
-    where K: Eq + Hash
-{
-    // Check displacement.
-    if elem.displacement(hash) > DISPLACEMENT_THRESHOLD {
-        // Probe sequence is too long. We must reduce its length.
-        // This branch is very unlikely.
-        let map = elem.into_table().0;
-        reduce_displacement(map);
-        let hash = map.make_hash(key);
-        search_hashed(DerefMapToTable(map), hash, |k| k == key)
-    } else {
-        // This should compile down to a simple copy.
-        InternalEntry::Vacant {
-            elem: elem,
-            hash: hash,
-        }
+    fn is_safeguarded(&self) -> bool {
+        true
     }
 }
 
@@ -238,6 +204,7 @@ mod test_adaptive_map {
             map.insert(value, ());
         }
         assert!(!map.hash_builder.uses_safe_hashing());
+        map.reserve(1000);
         for &value in values.take(8) {
             map.insert(value, ());
         }

@@ -39,6 +39,7 @@ pub struct OccupiedEntry<'a, K: 'a, V: 'a> {
 pub struct VacantEntry<'a, K: 'a, V: 'a> {
     hash: SafeHash,
     key: K,
+    reduce_displacement_flag: Option<&'a mut bool>,
     elem: VacantEntryState<K, V, &'a mut RawTable<K, V>>,
 }
 
@@ -148,11 +149,11 @@ impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
     pub fn insert(self, value: V) -> &'a mut V {
         match self.elem {
             NeqElem(bucket, ib) => {
-                robin_hood(bucket, ib, self.hash, self.key, value)
+                robin_hood(bucket, ib, self.hash, self.key, value, self.reduce_displacement_flag)
             }
-            NoElem(bucket) =>
+            NoElem(bucket) => {
                 let bucket = bucket.put(self.hash, self.key, value);
-                let bucket = adaptive_map::safeguard_insertion(bucket);
+                adaptive_map::safeguard_insertion(&bucket, self.reduce_displacement_flag);
                 bucket.into_mut_refs().1
             }
         }
@@ -171,6 +172,10 @@ impl<'a, K: 'a, V: 'a> VacantEntry<'a, K, V> {
     /// ```
     pub fn key(&self) -> &K {
         &self.key
+    }
+
+    pub fn set_flag_for_reduce_displacement(&mut self, flag: &'a mut bool) {
+        self.reduce_displacement_flag = Some(flag);
     }
 }
 
@@ -214,6 +219,7 @@ pub fn from_internal<K, V>(internal: InternalEntry<K, V, &mut RawTable<K, V>>, k
             Some(Entry::Vacant(VacantEntry {
                 hash: hash,
                 key: key.unwrap(),
+                reduce_displacement_flag: None,
                 elem: elem,
             }))
         }

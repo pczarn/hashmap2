@@ -360,6 +360,8 @@ pub struct HashMap<K, V, S = RandomState> {
     // All hashes are keyed on these values, to prevent hash collision attacks.
     hash_builder: S,
 
+    reduce_displacement_flag: bool,
+
     resize_policy: DefaultResizePolicy,
 }
 
@@ -449,7 +451,8 @@ fn robin_hood<'a, K: 'a, V: 'a>(bucket: FullBucketMut<'a, K, V>,
                         mut ib: usize,
                         mut hash: SafeHash,
                         mut key: K,
-                        mut val: V)
+                        mut val: V,
+                        reduce_displacement_flag: Option<&'a mut bool>)
                         -> &'a mut V {
     let starting_index = bucket.index();
     let size = {
@@ -484,7 +487,7 @@ fn robin_hood<'a, K: 'a, V: 'a>(bucket: FullBucketMut<'a, K, V>,
                     // bucket, which is a FullBucket on top of a
                     // FullBucketMut, into just one FullBucketMut. The "table"
                     // refers to the inner FullBucketMut in this context.
-                    let bucket = adaptive_map::safeguard_forward_shifted(bucket);
+                    let bucket = adaptive_map::safeguard_forward_shifted(bucket, reduce_displacement_flag);
                     return bucket.into_mut_refs().1;
                     // if safeguard_forward_shifted(bucket) {
                     //     return bucket.into_table().into_mut_refs().1;
@@ -612,6 +615,7 @@ impl<K, V, S> HashMap<K, V, S>
             hash_builder: hash_builder,
             resize_policy: DefaultResizePolicy::new(),
             table: RawTable::new(0),
+            reduce_displacement_flag: false,
         }
     }
 
@@ -646,6 +650,7 @@ impl<K, V, S> HashMap<K, V, S>
             hash_builder: hash_builder,
             resize_policy: resize_policy,
             table: RawTable::new(internal_cap),
+            reduce_displacement_flag: false,
         }
     }
 
@@ -687,8 +692,9 @@ impl<K, V, S> HashMap<K, V, S>
     /// map.reserve(10);
     /// ```
     pub fn reserve(&mut self, additional: usize) {
-        if self.table.get_flag() {
+        if self.reduce_displacement_flag {
             self.reduce_displacement();
+            self.reduce_displacement_flag = false;
         }
         let new_size = self.len().checked_add(additional).expect("capacity overflow");
         let min_cap = self.resize_policy.min_capacity(new_size);
@@ -827,12 +833,16 @@ impl<K, V, S> HashMap<K, V, S>
     /// If the key already exists, the hashtable will be returned untouched
     /// and a reference to the existing element will be returned.
     fn insert_hashed_nocheck(&mut self, hash: SafeHash, k: K, v: V) -> Option<V> {
-        let entry = self.safeguarded_search(&k, hash).into_entry(k);
+        let is_safeguarded = self.is_safeguarded();
+        let mut entry = search_hashed(&mut self.table, hash, |key| key == &k).into_entry(k);
         match entry {
             Some(Occupied(mut elem)) => {
                 Some(elem.insert(v))
             }
-            Some(Vacant(elem)) => {
+            Some(Vacant(mut elem)) => {
+                if is_safeguarded {
+                    elem.set_flag_for_reduce_displacement(&mut self.reduce_displacement_flag);
+                }
                 elem.insert(v);
                 None
             }
@@ -961,7 +971,14 @@ impl<K, V, S> HashMap<K, V, S>
         // Gotta resize now.
         self.reserve(1);
         let hash = self.make_hash(&key);
-        self.safeguarded_search(&key, hash).into_entry(key).expect("unreachable")
+        let is_safeguarded = self.is_safeguarded();
+        let mut entry = search_hashed(&mut self.table, hash, |k| k == &key).into_entry(key).expect("unreachable");
+        if is_safeguarded {
+            if let &mut Vacant(ref mut vacant) = &mut entry {
+                vacant.set_flag_for_reduce_displacement(&mut self.reduce_displacement_flag);
+            }
+        }
+        entry
     }
 
     /// Gets the given key's corresponding entry in the map for in-place
