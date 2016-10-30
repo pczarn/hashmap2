@@ -75,7 +75,7 @@ pub trait SafeguardedSearch<K, V> {
     // methods.
     fn reduce_displacement(&mut self);
 
-    fn is_safeguarded(&self) -> bool;
+    fn is_safeguarded() -> bool;
 }
 
 impl OneshotHash for i8 {}
@@ -130,7 +130,7 @@ impl<K, V, S> SafeguardedSearch<K, V> for HashMap<K, V, S>
         // nothing to do.
     }
 
-    default fn is_safeguarded(&self) -> bool {
+    default fn is_safeguarded() -> bool {
         false
     }
 }
@@ -152,7 +152,7 @@ impl<K, V> SafeguardedSearch<K, V> for HashMap<K, V, AdaptiveState>
         }
     }
 
-    fn is_safeguarded(&self) -> bool {
+    fn is_safeguarded() -> bool {
         true
     }
 }

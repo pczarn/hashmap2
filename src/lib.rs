@@ -833,14 +833,13 @@ impl<K, V, S> HashMap<K, V, S>
     /// If the key already exists, the hashtable will be returned untouched
     /// and a reference to the existing element will be returned.
     fn insert_hashed_nocheck(&mut self, hash: SafeHash, k: K, v: V) -> Option<V> {
-        let is_safeguarded = self.is_safeguarded();
         let mut entry = search_hashed(&mut self.table, hash, |key| key == &k).into_entry(k);
         match entry {
             Some(Occupied(mut elem)) => {
                 Some(elem.insert(v))
             }
             Some(Vacant(mut elem)) => {
-                if is_safeguarded {
+                if Self::is_safeguarded() {
                     elem.set_flag_for_reduce_displacement(&mut self.reduce_displacement_flag);
                 }
                 elem.insert(v);
@@ -971,9 +970,8 @@ impl<K, V, S> HashMap<K, V, S>
         // Gotta resize now.
         self.reserve(1);
         let hash = self.make_hash(&key);
-        let is_safeguarded = self.is_safeguarded();
         let mut entry = search_hashed(&mut self.table, hash, |k| k == &key).into_entry(key).expect("unreachable");
-        if is_safeguarded {
+        if Self::is_safeguarded() {
             if let &mut Vacant(ref mut vacant) = &mut entry {
                 vacant.set_flag_for_reduce_displacement(&mut self.reduce_displacement_flag);
             }
