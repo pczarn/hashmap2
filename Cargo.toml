@@ -36,4 +36,4 @@ repository  = "https://github.com/carllerche/hashmap2"
 homepage    = "https://github.com/carllerche/hashmap2"
 
 [dependencies]
-rand = "0.3.12"
+rand = "0.3.15"

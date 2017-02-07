@@ -590,6 +590,39 @@ fn test_offset_calculation() {
 }
 
 impl<K, V> RawTable<K, V> {
+    pub fn stats(&self, stats: &mut Vec<(u64, u64)>) {
+        if stats.is_empty() {
+            *stats = vec![(0, 0); 2000];
+        }
+        // stats.clear();
+        // stats.extend(iter::repeat((0, 0)).take(1000));
+        let mut iter = self.raw_buckets();
+        let first_hash = iter.raw.hash;
+        let mut latest_hash = iter.raw.hash;
+        let mut chunk_info = vec![];
+        while let Some(raw) = iter.next() {
+            let num_empty = (raw.hash as usize - latest_hash as usize) / size_of::<u64>();
+            let idx = (raw.hash as usize - first_hash as usize) / size_of::<u64>();
+            stats[0].0 += num_empty as u64;
+            stats[0].1 += num_empty as u64;
+            if num_empty > 0 {
+                for n in chunk_info.drain(..) {
+                    stats[n as usize].1 += 1;
+                }
+            } else {
+                for n in chunk_info.iter_mut() {
+                    *n += 1;
+                }
+            }
+            chunk_info.push(0);
+            let ib = unsafe {
+                (*raw.hash) as usize & (self.capacity - 1)
+            };
+            let displacement = (idx as isize - ib as isize) as usize & (self.capacity - 1);
+            stats[displacement].0 += 1;
+            latest_hash = iter.raw.hash;
+        }
+    }
     /// Does not initialize the buckets. The caller should ensure they,
     /// at the very least, set every hash to EMPTY_BUCKET.
     unsafe fn new_uninitialized(capacity: usize) -> RawTable<K, V> {

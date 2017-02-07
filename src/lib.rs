@@ -1239,6 +1239,10 @@ impl<K, V, S> HashMap<K, V, S>
 
         self.search_mut(k).into_occupied_bucket().map(|bucket| pop_internal(bucket))
     }
+
+    pub fn stats(&self, stats: &mut Vec<(u64, u64)>) {
+        self.table.stats(stats);
+    }
 }
 
 // Not copying this requires specialization

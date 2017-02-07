@@ -22,7 +22,7 @@ use HashMap;
 
 // Beyond this displacement, we switch to safe hashing or grow the table.
 const DISPLACEMENT_THRESHOLD: usize = 128;
-const FORWARD_SHIFT_THRESHOLD: usize = 512;
+const FORWARD_SHIFT_THRESHOLD: usize = 1024;
 // When the map's load factor is below this threshold, we switch to safe hashing.
 // Otherwise, we grow the table.
 // const LOAD_FACTOR_THRESHOLD: f32 = 0.625;
